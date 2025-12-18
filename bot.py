@@ -1035,6 +1035,7 @@ def main():
         print(f"\n❌ Ошибка: {e}")
 
 # ======== ДОБАВЛЕНО ДЛЯ ЗАПУСКА НА RENDER ========
+# ======== ДОБАВЛЕНО ДЛЯ ЗАПУСКА НА RENDER ========
 if __name__ == "__main__":
     # Это позволит Render проверить порт
     import os
@@ -1046,9 +1047,22 @@ if __name__ == "__main__":
         # Получаем порт от Render
         port = int(os.environ.get("PORT", 5000))
         
-        # Запускаем Flask
-        print(f"🚀 Запускаю сервер на порту {port}")
-        app.run(host='0.0.0.0', port=port)
+        # Запускаем Flask в отдельном потоке
+        from threading import Thread
+        flask_thread = Thread(
+            target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
+            daemon=True
+        )
+        flask_thread.start()
+        print(f"✅ Flask сервер запущен на http://0.0.0.0:{port}")
+        
+        # Ждём секунду и запускаем Telegram бота
+        import time
+        time.sleep(2)
+        print("🤖 Запускаю Telegram бота...")
+        main()  # Запускаем основную функцию с Telegram ботом
+        
     else:
         # Обычный локальный запуск
         main()
+
