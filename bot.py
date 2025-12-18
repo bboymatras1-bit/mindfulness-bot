@@ -1,17 +1,17 @@
-# mindfulness_bot_v5.py - Бот с опросами с 09:00 до 21:00
+# mindfulness_bot_v5.py - Бот с опросами с 09:00 до 21:00 (Webhook версия)
 import time
 import threading
 import asyncio
 import json
 import os
 from datetime import datetime, date, time as dt_time
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 
-# ======== ДОБАВЛЕНО ДЛЯ FLASK ========
+# ======== ДОБАВЛЕНО ДЛЯ FLASK И WEBHOOK ========
 from flask import Flask, request
 app = Flask(__name__)
-# =====================================
+# ===============================================
 
 def send_poll_to_user_sync(user_id, bot):
     """Синхронная функция для отправки опроса пользователю"""
@@ -56,10 +56,11 @@ def send_poll_to_user_sync(user_id, bot):
         return False
 
 # ================= КОНФИГУРАЦИЯ =================
-BOT_TOKEN = "8424450945:AAE6uWv4tlADMTfH-rUNojYEIUVqwTei9JY"  # Вставь свой токен!
+BOT_TOKEN = "8424450945:AAE6uWv4tlADMTfH-rUNojYEIUVqwTei9JY"
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # URL для вебхука (из Render)
 
 # Настройки
-POLL_INTERVAL = 7200  # 7200 секунд = 2 часа (интервал между опросами в активное время)
+POLL_INTERVAL = 7200  # 7200 секунд = 2 часа
 START_HOUR = 9        # Начало опросов в 09:00
 END_HOUR = 21         # Конец опросов в 21:00
 # ================================================
@@ -168,45 +169,29 @@ def get_next_poll_time():
     now = datetime.now()
     current_hour = now.hour
     
-    # Если сейчас ночное время (после 21:00 или до 09:00)
     if current_hour >= END_HOUR or current_hour < START_HOUR:
-        # Следующий опрос будет завтра в 09:00
         tomorrow = now.replace(hour=START_HOUR, minute=0, second=0, microsecond=0)
         tomorrow = tomorrow.replace(day=tomorrow.day + 1)
         return tomorrow
     else:
-        # Следующий опрос через POLL_INTERVAL секунд
-        # Вычисляем сколько секунд прошло с 09:00
         seconds_since_9am = (current_hour - START_HOUR) * 3600 + now.minute * 60 + now.second
-        
-        # Вычисляем сколько интервалов прошло
         intervals_passed = seconds_since_9am // POLL_INTERVAL
-        
-        # Следующий интервал
         next_interval = intervals_passed + 1
-        
-        # Время следующего опроса в секундах от 09:00
         next_seconds_from_9am = next_interval * POLL_INTERVAL
         
-        # Преобразуем обратно в часы, минуты, секунды
         next_hours = START_HOUR + (next_seconds_from_9am // 3600)
         remaining_seconds = next_seconds_from_9am % 3600
         next_minutes = remaining_seconds // 60
         next_seconds = remaining_seconds % 60
         
-        # Создаём объект времени
         next_time = now.replace(hour=next_hours, minute=next_minutes, second=next_seconds, microsecond=0)
         
-        # Проверяем, что следующее время не после 21:00
         if next_time.hour >= END_HOUR:
-            # Если после 21:00, то следующий опрос завтра в 09:00
             tomorrow = now.replace(hour=START_HOUR, minute=0, second=0, microsecond=0)
             tomorrow = tomorrow.replace(day=tomorrow.day + 1)
             return tomorrow
         
-        # Если следующее время раньше текущего (может случиться из-за задержек)
         if next_time <= now:
-            # Добавляем ещё один интервал
             next_seconds_from_9am += POLL_INTERVAL
             next_hours = START_HOUR + (next_seconds_from_9am // 3600)
             remaining_seconds = next_seconds_from_9am % 3600
@@ -229,14 +214,10 @@ def send_polls_periodically():
         now = datetime.now()
         current_hour = now.hour
         
-        # Проверяем, находимся ли мы в активное время (09:00-21:00)
         if START_HOUR <= current_hour < END_HOUR:
-            # Вычисляем, сколько секунд прошло с 09:00
             seconds_since_9am = (current_hour - START_HOUR) * 3600 + now.minute * 60 + now.second
             
-            # Проверяем, является ли текущее время временем опроса (кратно интервалу)
             if seconds_since_9am % POLL_INTERVAL == 0:
-                # Проверяем, не отправляли ли мы уже опрос в это время
                 current_poll_time = (now.hour, now.minute)
                 if current_poll_time != last_poll_time:
                     if active_users and bot_instance:
@@ -258,8 +239,7 @@ def send_polls_periodically():
                         except Exception as e:
                             print(f"❌ Ошибка в таймере опросов: {e}")
         else:
-            # Вне активного времени
-            last_poll_time = None  # Сбрасываем при переходе через границу времени
+            last_poll_time = None
             
             if current_hour >= END_HOUR:
                 next_poll = get_next_poll_time()
@@ -284,7 +264,7 @@ def send_polls_periodically():
                 else:
                     time.sleep(30)
         
-        time.sleep(1)  # Короткая пауза между проверками
+        time.sleep(1)
 
 def send_daily_summary():
     """Отправляет ежедневную сводку в 21:00"""
@@ -300,12 +280,10 @@ def send_daily_summary():
             stats = get_today_stats(user_id)
             
             if stats and stats["total_polls"] > 0:
-                # Рассчитываем проценты
                 present_percent = (stats["present_states"] / stats["total_polls"] * 100) if stats["total_polls"] > 0 else 0
                 goal_percent = (stats["remembered_goal"] / stats["total_polls"] * 100) if stats["total_polls"] > 0 else 0
                 text_percent = (stats["goals_with_text"] / stats["remembered_goal"] * 100) if stats["remembered_goal"] > 0 else 0
                 
-                # Формируем сводку
                 summary = (
                     f"📊 *ЕЖЕДНЕВНАЯ СВОДКА*\n"
                     f"*Время: {END_HOUR}:00*\n\n"
@@ -317,11 +295,9 @@ def send_daily_summary():
                     f"• Время на цели: {stats['total_minutes']} мин ({stats['total_minutes']/60:.1f} ч)\n\n"
                 )
                 
-                # Показываем комментарии к состояниям если есть
                 if stats["states_with_comment"] > 0:
                     summary += f"📝 *Комментарии к состояниям:* {stats['states_with_comment']} записей\n"
                 
-                # Показываем цели с комментариями
                 if stats["goals_with_text"] > 0:
                     summary += "\n🎯 *Записанные цели:*\n"
                     for record in stats["records"]:
@@ -333,7 +309,6 @@ def send_daily_summary():
                 
                 summary += f"\n🌙 *Опросы завершены до завтра {START_HOUR}:00*\nСпокойной ночи!"
                 
-                # Отправляем сводку
                 future = asyncio.run_coroutine_threadsafe(
                     bot_instance.bot.send_message(
                         chat_id=user_id,
@@ -359,67 +334,80 @@ def scheduler():
         current_hour = now.hour
         current_minute = now.minute
         
-        # Проверяем, не 21:00 ли для отправки сводки
         if current_hour == END_HOUR and current_minute == 0:
             send_daily_summary()
-            time.sleep(60)  # Ждём минуту чтобы не отправлять повторно
+            time.sleep(60)
         
-        time.sleep(30)  # Проверяем каждые 30 секунд
+        time.sleep(30)
 
-# ======== ДОБАВЛЕНО ДЛЯ WEBHOOK И FLASK ========
+# ======== FLASK И WEBHOOK ========
 @app.route('/')
 def index():
     """Простая страница для проверки работы"""
     return "🤖 Mindfulness Bot работает! ✅"
 
-# ======== WEBHOOK ENDPOINT ========
-@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     """Endpoint для вебхука от Telegram"""
-    try:
-        # Получаем данные от Telegram
-        json_str = request.get_data().decode('UTF-8')
-        update_data = json.loads(json_str)
-        
-        print(f"📩 Получено сообщение от Telegram")
-        
-        # Создаем объект Update
-        from telegram import Update
-        update = Update.de_json(update_data, None)  # Пока без бота
-        
-        # Обрабатываем сообщение
-        if update.message:
-            print(f"💬 Сообщение: {update.message.text}")
+    if request.method == "POST":
+        try:
+            # Получаем данные от Telegram
+            update_data = request.get_json()
             
-            # Простой ответ для теста
-            import requests
-            response_data = {
-                'method': 'sendMessage',
-                'chat_id': update.message.chat.id,
-                'text': f'Бот работает! Получил: {update.message.text}'
-            }
+            if update_data:
+                print(f"📩 Получено обновление: {update_data.get('update_id')}")
+                
+                # Создаем Update объект
+                update = Update.de_json(update_data, bot_instance.bot)
+                
+                # Обрабатываем обновление в асинхронном цикле
+                if update and bot_instance:
+                    asyncio.run_coroutine_threadsafe(
+                        process_update(update),
+                        loop
+                    )
             
-            # Отправляем ответ Telegram
-            requests.post(
-                f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
-                json=response_data
-            )
-        
-        return '', 200
-        
-    except json.JSONDecodeError as e:
-        print(f"❌ Ошибка JSON: {e}")
-        return '', 400
-    except Exception as e:
-        print(f"❌ Ошибка в вебхуке: {type(e).__name__}: {e}")
-        return '', 400
+            return 'ok', 200
+            
+        except Exception as e:
+            print(f"❌ Ошибка в вебхуке: {e}")
+            return 'error', 400
+    
+    return 'method not allowed', 405
 
-async def handle_webhook_update(update):
-    """Асинхронная обработка обновления от вебхука"""
-    # Здесь нужно будет добавить логику обработки сообщений
-    # Пока просто логируем
-    print(f"📩 Получено обновление: {update.update_id}")
-    return
+async def process_update(update):
+    """Обрабатывает обновление через бота"""
+    try:
+        if bot_instance:
+            await bot_instance.process_update(update)
+    except Exception as e:
+        print(f"❌ Ошибка обработки обновления: {e}")
+
+def set_webhook():
+    """Устанавливает вебхук на сервере Telegram"""
+    try:
+        import requests
+        
+        if not WEBHOOK_URL:
+            print("⚠️ WEBHOOK_URL не указан, не могу установить вебхук")
+            return False
+        
+        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
+        response = requests.post(
+            f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook',
+            json={'url': webhook_url}
+        )
+        
+        if response.status_code == 200:
+            print(f"✅ Webhook установлен: {webhook_url}")
+            return True
+        else:
+            print(f"❌ Ошибка установки webhook: {response.text}")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Ошибка при установке webhook: {e}")
+        return False
 # ================================================
 
 async def handle_state_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -431,7 +419,6 @@ async def handle_state_response(update: Update, context: ContextTypes.DEFAULT_TY
     
     state = update.message.text
     
-    # Проверяем, что ответ один из разрешённых вариантов
     if state not in ["👁️ Был внимателен и присутствовал", "🤖 Спал и действовал на автомате", "➡️ Пропустить комментарий"]:
         await update.message.reply_text(
             "⚠️ Пожалуйста, выбери один из вариантов:",
@@ -622,7 +609,6 @@ async def handle_minutes_response(update: Update, context: ContextTypes.DEFAULT_
         report += f"• *Время на цель:* {minutes} мин\n"
         report += f"• *Время:* {datetime.now().strftime('%H:%M')}\n\n"
         
-        # Проверяем время для следующего опроса
         now = datetime.now()
         next_poll = get_next_poll_time()
         
@@ -668,7 +654,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     active_users.add(user_id)
     
-    # Запускаем таймер если ещё не запущен
     if timer_thread is None or not timer_thread.is_alive():
         global stop_timer
         stop_timer = False
@@ -676,7 +661,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         timer_thread.start()
         print("⏰ Таймер опросов запущен!")
     
-    # Запускаем планировщик если ещё не запущен
     if scheduler_thread is None or not scheduler_thread.is_alive():
         scheduler_thread = threading.Thread(target=scheduler, daemon=True)
         scheduler_thread.start()
@@ -697,7 +681,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"3. Время на цели (0-120 мин)\n\n"
     )
     
-    # Добавляем информацию о текущем времени
     if START_HOUR <= current_hour < END_HOUR:
         next_poll = get_next_poll_time()
         time_until_next = (next_poll - now).total_seconds()
@@ -743,9 +726,9 @@ async def next_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     hours_until = int(time_until_next // 3600)
     minutes_until = int((time_until_next % 3600) // 60)
     
-    if time_until_next > 3600:  # Больше часа
+    if time_until_next > 3600:
         time_text = f"{hours_until} часов {minutes_until} минут"
-    elif time_until_next > 60:  # Больше минуты
+    elif time_until_next > 60:
         time_text = f"{minutes_until} минут"
     else:
         time_text = "менее минуты"
@@ -756,7 +739,7 @@ async def next_poll_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *Через:* {time_text}\n"
         f"• *Расписание:* {START_HOUR}:00-{END_HOUR}:00\n\n"
         f"📅 *Сегодняшние опросы:*\n"
-        f"• 09:00, 11:00, 13:00, 15:00, 17:00, 19:00",
+        f"• {START_HOUR}:00, 11:00, 13:00, 15:00, 17:00, 19:00",
         parse_mode="Markdown"
     )
 
@@ -795,7 +778,7 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"• С {START_HOUR}:00 до {END_HOUR}:00\n"
             f"• Каждые {POLL_INTERVAL//3600} часа\n\n"
             f"📅 *Сегодняшние опросы:*\n"
-            f"• 09:00, 11:00, 13:00, 15:00, 17:00, 19:00",
+            f"• {START_HOUR}:00, 11:00, 13:00, 15:00, 17:00, 19:00",
             parse_mode="Markdown"
         )
         return
@@ -814,7 +797,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Время на цели: {stats['total_minutes']} мин ({stats['total_minutes']/60:.1f} ч)\n\n"
     )
     
-    # Показываем комментарии к состояниям если есть
     if stats["states_with_comment"] > 0:
         report += "📝 *Комментарии к состояниям:*\n"
         for record in stats["records"]:
@@ -823,7 +805,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 report += f"• *{time_str}* ({record['state']}): {record['state_comment']}\n"
         report += "\n"
     
-    # Показываем цели с комментариями (ПОЛНЫЙ ТЕКСТ)
     if stats["goals_with_text"] > 0:
         report += "🎯 *Записанные цели:*\n"
         for record in stats["records"]:
@@ -834,7 +815,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     report += f"  *Комментарий:* {record['goal_comment']}\n"
         report += "\n"
     
-    # Добавляем анализ
     if present_percent >= 70:
         report += "🎯 *Отличная осознанность!* Ты часто присутствовал.\n"
     elif present_percent >= 40:
@@ -851,7 +831,6 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         report += "🤔 *Цель теряется.* Напомни себе о ней."
     
-    # Добавляем информацию о следующем опросе
     now = datetime.now()
     if START_HOUR <= now.hour < END_HOUR:
         next_poll = get_next_poll_time()
@@ -973,6 +952,76 @@ def check_token():
         return False
     return True
 
+def setup_bot():
+    """Настраивает бота и возвращает приложение"""
+    global loop
+    
+    app_bot = Application.builder().token(BOT_TOKEN).build()
+    
+    # Регистрируем команды
+    app_bot.add_handler(CommandHandler("start", start_command))
+    app_bot.add_handler(CommandHandler("stop", stop_command))
+    app_bot.add_handler(CommandHandler("stats", stats_command))
+    app_bot.add_handler(CommandHandler("manual", manual_command))
+    app_bot.add_handler(CommandHandler("test_poll", test_poll_command))
+    app_bot.add_handler(CommandHandler("next_poll", next_poll_command))
+    app_bot.add_handler(CommandHandler("help", help_command))
+    
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    return app_bot
+
+def run_webhook_mode():
+    """Запускает бота в режиме webhook"""
+    global bot_instance, loop
+    
+    print("🌐 Запускаю в режиме WEBHOOK")
+    
+    # Настраиваем бота
+    app_bot = setup_bot()
+    bot_instance = app_bot
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Запускаем таймеры в отдельном потоке
+    global stop_timer
+    stop_timer = False
+    
+    timer_thread = threading.Thread(target=send_polls_periodically, daemon=True)
+    timer_thread.start()
+    
+    scheduler_thread = threading.Thread(target=scheduler, daemon=True)
+    scheduler_thread.start()
+    
+    # Устанавливаем webhook
+    set_webhook()
+    
+    return app_bot
+
+def run_polling_mode():
+    """Запускает бота в режиме polling"""
+    global bot_instance, loop
+    
+    print("📡 Запускаю в режиме POLLING")
+    
+    # Настраиваем бота
+    app_bot = setup_bot()
+    bot_instance = app_bot
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    
+    # Запускаем таймеры в отдельном потоке
+    global stop_timer
+    stop_timer = False
+    
+    timer_thread = threading.Thread(target=send_polls_periodically, daemon=True)
+    timer_thread.start()
+    
+    scheduler_thread = threading.Thread(target=scheduler, daemon=True)
+    scheduler_thread.start()
+    
+    return app_bot
+
 def main():
     """Главная функция"""
     print("🤖" + "="*50)
@@ -991,100 +1040,76 @@ def main():
     print(f"🎯 Примерное расписание: {START_HOUR}:00, 11:00, 13:00, 15:00, 17:00, 19:00")
     
     try:
-        app_bot = Application.builder().token(BOT_TOKEN).build()
+        # Проверяем, нужно ли использовать webhook
+        port = os.environ.get("PORT")
+        webhook_url = os.environ.get("WEBHOOK_URL")
         
-        # Регистрируем команды
-        app_bot.add_handler(CommandHandler("start", start_command))
-        app_bot.add_handler(CommandHandler("stop", stop_command))
-        app_bot.add_handler(CommandHandler("stats", stats_command))
-        app_bot.add_handler(CommandHandler("manual", manual_command))
-        app_bot.add_handler(CommandHandler("test_poll", test_poll_command))
-        app_bot.add_handler(CommandHandler("next_poll", next_poll_command))
-        app_bot.add_handler(CommandHandler("help", help_command))
-        
-        from telegram.ext import MessageHandler, filters
-        app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        
-        print("\n✅ Бот инициализирован")
-        print(f"\n📋 Команды в Telegram:")
-        print(f"  /start     - подписаться на опросы")
-        print(f"  /stop      - отписаться")
-        print(f"  /stats     - статистика за сегодня")
-        print(f"  /manual    - добавить запись вручную")
-        print(f"  /next_poll - когда следующий опрос")
-        print(f"  /test_poll - получить опрос сейчас")
-        print(f"  /help      - справка по командам")
-        print(f"\n⏰ Опросы: {START_HOUR}:00-{END_HOUR}:00")
-        print(f"📅 Каждые: {POLL_INTERVAL//3600} часа")
-        print(f"📊 Сводка: ежедневно в {END_HOUR}:00")
-        print("\n" + "="*50)
-        print("⚠️ Для остановки нажмите Ctrl+C")
-        print("="*50)
-        
-        # ======== ДОБАВЛЕНО ДЛЯ РАБОТЫ НА RENDER ========
-        import sys
-        
-                               # Если запускаем на Render (есть переменная PORT)
-        if os.environ.get("PORT"):
-            port = int(os.environ.get("PORT", 5000))
-            print(f"🚀 Запускаю Flask сервер на порту {port}")
+        if port and webhook_url:
+            # Режим webhook (для Render/Heroku)
+            print(f"🌐 Запуск в режиме WEBHOOK")
+            print(f"🔗 Webhook URL: {webhook_url}")
             
             # Запускаем Flask в отдельном потоке
             from threading import Thread
+            
             flask_thread = Thread(
-                target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
+                target=lambda: app.run(
+                    host='0.0.0.0', 
+                    port=int(port), 
+                    debug=False, 
+                    use_reloader=False
+                ),
                 daemon=True
             )
             flask_thread.start()
-            print(f"✅ Flask сервер запущен на http://0.0.0.0:{port}")
             
-            # Ждем секунду, чтобы Flask точно запустился
-            import time
-            time.sleep(2)
+            print(f"✅ Flask сервер запущен на порту {port}")
             
-            # Запускаем Telegram бота ПРОСТО как раньше
-            print("🤖 Запускаю Telegram бота...")
-            app_bot.run_polling()
+            # Инициализируем бота для webhook
+            run_webhook_mode()
+            
+            print("\n✅ Бот работает в режиме webhook!")
+            print("📩 Ожидаю обновления от Telegram...")
+            
+            # Бесконечный цикл для поддержания работы
+            while True:
+                time.sleep(3600)  # Спим час и проверяем снова
             
         else:
-            # Локальный запуск (без порта)
-            print("💻 Локальный запуск Telegram бота")
+            # Режим polling (для локальной разработки)
+            print("💻 Запуск в режиме POLLING")
+            
+            app_bot = run_polling_mode()
+            
+            print("\n✅ Бот инициализирован")
+            print(f"\n📋 Команды в Telegram:")
+            print(f"  /start     - подписаться на опросы")
+            print(f"  /stop      - отписаться")
+            print(f"  /stats     - статистика за сегодня")
+            print(f"  /manual    - добавить запись вручную")
+            print(f"  /next_poll - когда следующий опрос")
+            print(f"  /test_poll - получить опрос сейчас")
+            print(f"  /help      - справка по командам")
+            print(f"\n⏰ Опросы: {START_HOUR}:00-{END_HOUR}:00")
+            print(f"📅 Каждые: {POLL_INTERVAL//3600} часа")
+            print(f"📊 Сводка: ежедневно в {END_HOUR}:00")
+            print("\n" + "="*50)
+            print("⚠️ Для остановки нажмите Ctrl+C")
+            print("="*50)
+            
+            # Запускаем polling
             app_bot.run_polling()
-        # ================================================
         
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
         global stop_timer
         stop_timer = True
-        if timer_thread and timer_thread.is_alive():
-            timer_thread.join(timeout=2)
-        if scheduler_thread and scheduler_thread.is_alive():
-            scheduler_thread.join(timeout=2)
+        time.sleep(1)
     except Exception as e:
-        print(f"\n❌ Ошибка: {e}")
+        print(f"\n❌ Ошибка: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
 
 # ======== ГЛАВНЫЙ ЗАПУСК ========
 if __name__ == "__main__":
-    import os
-    
-    # Определяем, где запускаемся
-    is_render = os.environ.get("PORT") is not None
-    
-    if is_render:
-        print("🌐 Запуск на Render")
-        port = int(os.environ.get("PORT", 10000))
-        
-        # ====== ЗАПУСКАЕМ Flask ЧЕРЕЗ WAITRESS ======
-        print(f"🚀 Запускаю Flask на порту {port} через Waitress...")
-        
-        from waitress import serve
-        
-        # Запускаем Waitress (производственный сервер)
-        serve(app, host='0.0.0.0', port=port, threads=4)
-        # Waitress запускается СРАЗУ, Render видит порт
-        
-    else:
-        print("💻 Локальный запуск")
-        # Локально запускаем как обычно (polling)
-        main()
-
+    main()
