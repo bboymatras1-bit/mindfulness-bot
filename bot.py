@@ -372,24 +372,46 @@ def index():
     """Простая страница для проверки работы"""
     return "🤖 Mindfulness Bot работает! ✅"
 
+# ======== WEBHOOK ENDPOINT ========
 @app.route(f'/{BOT_TOKEN}', methods=['POST'])
 def webhook():
     """Endpoint для вебхука от Telegram"""
     try:
+        # Получаем данные от Telegram
         json_str = request.get_data().decode('UTF-8')
         update_data = json.loads(json_str)
         
-        # Создаем объект Update из данных
-        update = Update.de_json(update_data, bot_instance.bot)
+        print(f"📩 Получено сообщение от Telegram")
         
-        # Запускаем обработку в асинхронном потоке
-        asyncio.run_coroutine_threadsafe(
-            handle_webhook_update(update),
-            loop
-        )
+        # Создаем объект Update
+        from telegram import Update
+        update = Update.de_json(update_data, None)  # Пока без бота
+        
+        # Обрабатываем сообщение
+        if update.message:
+            print(f"💬 Сообщение: {update.message.text}")
+            
+            # Простой ответ для теста
+            import requests
+            response_data = {
+                'method': 'sendMessage',
+                'chat_id': update.message.chat.id,
+                'text': f'Бот работает! Получил: {update.message.text}'
+            }
+            
+            # Отправляем ответ Telegram
+            requests.post(
+                f'https://api.telegram.org/bot{BOT_TOKEN}/sendMessage',
+                json=response_data
+            )
+        
         return '', 200
+        
+    except json.JSONDecodeError as e:
+        print(f"❌ Ошибка JSON: {e}")
+        return '', 400
     except Exception as e:
-        print(f"❌ Ошибка в вебхуке: {e}")
+        print(f"❌ Ошибка в вебхуке: {type(e).__name__}: {e}")
         return '', 400
 
 async def handle_webhook_update(update):
@@ -1065,3 +1087,4 @@ if __name__ == "__main__":
         print("💻 Локальный запуск")
         # Локально запускаем как обычно (polling)
         main()
+
