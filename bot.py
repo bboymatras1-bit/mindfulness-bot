@@ -8,6 +8,11 @@ from datetime import datetime, date, time as dt_time
 from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 
+# ======== ДОБАВЛЕНО ДЛЯ FLASK ========
+from flask import Flask, request
+app = Flask(__name__)
+# =====================================
+
 def send_poll_to_user_sync(user_id, bot):
     """Синхронная функция для отправки опроса пользователю"""
     try:
@@ -360,6 +365,40 @@ def scheduler():
             time.sleep(60)  # Ждём минуту чтобы не отправлять повторно
         
         time.sleep(30)  # Проверяем каждые 30 секунд
+
+# ======== ДОБАВЛЕНО ДЛЯ WEBHOOK И FLASK ========
+@app.route('/')
+def index():
+    """Простая страница для проверки работы"""
+    return "🤖 Mindfulness Bot работает! ✅"
+
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def webhook():
+    """Endpoint для вебхука от Telegram"""
+    try:
+        json_str = request.get_data().decode('UTF-8')
+        update_data = json.loads(json_str)
+        
+        # Создаем объект Update из данных
+        update = Update.de_json(update_data, bot_instance.bot)
+        
+        # Запускаем обработку в асинхронном потоке
+        asyncio.run_coroutine_threadsafe(
+            handle_webhook_update(update),
+            loop
+        )
+        return '', 200
+    except Exception as e:
+        print(f"❌ Ошибка в вебхуке: {e}")
+        return '', 400
+
+async def handle_webhook_update(update):
+    """Асинхронная обработка обновления от вебхука"""
+    # Здесь нужно будет добавить логику обработки сообщений
+    # Пока просто логируем
+    print(f"📩 Получено обновление: {update.update_id}")
+    return
+# ================================================
 
 async def handle_state_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка ответа на вопрос о состоянии"""
@@ -930,19 +969,19 @@ def main():
     print(f"🎯 Примерное расписание: {START_HOUR}:00, 11:00, 13:00, 15:00, 17:00, 19:00")
     
     try:
-        app = Application.builder().token(BOT_TOKEN).build()
+        app_bot = Application.builder().token(BOT_TOKEN).build()
         
         # Регистрируем команды
-        app.add_handler(CommandHandler("start", start_command))
-        app.add_handler(CommandHandler("stop", stop_command))
-        app.add_handler(CommandHandler("stats", stats_command))
-        app.add_handler(CommandHandler("manual", manual_command))
-        app.add_handler(CommandHandler("test_poll", test_poll_command))
-        app.add_handler(CommandHandler("next_poll", next_poll_command))
-        app.add_handler(CommandHandler("help", help_command))
+        app_bot.add_handler(CommandHandler("start", start_command))
+        app_bot.add_handler(CommandHandler("stop", stop_command))
+        app_bot.add_handler(CommandHandler("stats", stats_command))
+        app_bot.add_handler(CommandHandler("manual", manual_command))
+        app_bot.add_handler(CommandHandler("test_poll", test_poll_command))
+        app_bot.add_handler(CommandHandler("next_poll", next_poll_command))
+        app_bot.add_handler(CommandHandler("help", help_command))
         
         from telegram.ext import MessageHandler, filters
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         
         print("\n✅ Бот инициализирован")
         print(f"\n📋 Команды в Telegram:")
@@ -960,7 +999,29 @@ def main():
         print("⚠️ Для остановки нажмите Ctrl+C")
         print("="*50)
         
-        app.run_polling()
+        # ======== ДОБАВЛЕНО ДЛЯ РАБОТЫ НА RENDER ========
+        import sys
+        
+        # Если запускаем на Render (есть переменная PORT)
+        if os.environ.get("PORT"):
+            port = int(os.environ.get("PORT", 5000))
+            print(f"🚀 Запускаю Flask сервер на порту {port}")
+            
+            # Запускаем Flask в отдельном потоке
+            from threading import Thread
+            flask_thread = Thread(
+                target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False),
+                daemon=True
+            )
+            flask_thread.start()
+            print(f"✅ Flask сервер запущен на http://0.0.0.0:{port}")
+            
+            # Запускаем Telegram бота
+            app_bot.run_polling()
+        else:
+            # Локальный запуск (без порта)
+            app_bot.run_polling()
+        # ================================================
         
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен пользователем")
@@ -973,5 +1034,21 @@ def main():
     except Exception as e:
         print(f"\n❌ Ошибка: {e}")
 
+# ======== ДОБАВЛЕНО ДЛЯ ЗАПУСКА НА RENDER ========
 if __name__ == "__main__":
-    main()
+    # Это позволит Render проверить порт
+    import os
+    
+    # Если есть переменная PORT (значит запуск на Render)
+    if os.environ.get("PORT"):
+        print("🌐 Обнаружен запуск на Render")
+        
+        # Получаем порт от Render
+        port = int(os.environ.get("PORT", 5000))
+        
+        # Запускаем Flask
+        print(f"🚀 Запускаю сервер на порту {port}")
+        app.run(host='0.0.0.0', port=port)
+    else:
+        # Обычный локальный запуск
+        main()
