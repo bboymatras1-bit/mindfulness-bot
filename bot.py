@@ -7,9 +7,10 @@ import os
 from datetime import datetime, date, time as dt_time
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+import requests
 
 # ======== ДОБАВЛЕНО ДЛЯ FLASK И WEBHOOK ========
-from flask import Flask, request
+from flask import Flask, request, Response
 app = Flask(__name__)
 # ===============================================
 
@@ -31,9 +32,7 @@ def send_poll_to_user_sync(user_id, bot):
         
         # Сбрасываем состояние пользователя для нового опроса
         user_states[user_id] = {
-            "step": 1,  # 1 = состояние, 2 = комментарий к состоянию (опционально), 
-                       # 3 = помнил ли цель, 4 = комментарий к цели (опционально), 
-                       # 5 = текст цели (если помнил), 6 = сколько минут
+            "step": 1,
             "data": {}
         }
         
@@ -57,7 +56,7 @@ def send_poll_to_user_sync(user_id, bot):
 
 # ================= КОНФИГУРАЦИЯ =================
 BOT_TOKEN = "8424450945:AAE6uWv4tlADMTfH-rUNojYEIUVqwTei9JY"
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # URL для вебхука (из Render)
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "")  # URL для вебхука
 
 # Настройки
 POLL_INTERVAL = 7200  # 7200 секунд = 2 часа
@@ -143,7 +142,6 @@ def get_today_stats(user_id):
     
     records = user_data[user_id_str]["records"][today]
     
-    # Считаем статистику
     stats = {
         "total_polls": len(records),
         "present_states": sum(1 for r in records if r.get("state") == "👁️ Был внимателен и присутствовал"),
@@ -346,7 +344,12 @@ def index():
     """Простая страница для проверки работы"""
     return "🤖 Mindfulness Bot работает! ✅"
 
-@app.route(f'/webhook/{BOT_TOKEN}', methods=['POST'])
+@app.route('/health')
+def health():
+    """Health check endpoint"""
+    return "OK", 200
+
+@app.route(f'/webhook', methods=['POST'])
 def webhook():
     """Endpoint для вебхука от Telegram"""
     if request.method == "POST":
@@ -362,276 +365,123 @@ def webhook():
                 
                 # Обрабатываем обновление в асинхронном цикле
                 if update and bot_instance:
-                    asyncio.run_coroutine_threadsafe(
-                        process_update(update),
-                        loop
-                    )
-            
-            return 'ok', 200
+                    # Используем thread pool для обработки
+                    import concurrent.futures
+                    
+                    def process_update_sync():
+                        try:
+                            # Запускаем обработку в event loop
+                            asyncio.run_coroutine_threadsafe(
+                                process_update_async(update),
+                                loop
+                            ).result(timeout=5)
+                        except Exception as e:
+                            print(f"❌ Ошибка обработки обновления: {e}")
+                    
+                    # Запускаем в отдельном потоке
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                        future = executor.submit(process_update_sync)
+                        try:
+                            future.result(timeout=3)
+                        except concurrent.futures.TimeoutError:
+                            print("⚠️ Таймаут обработки обновления")
+                
+                return 'ok', 200
+            else:
+                return 'no data', 400
             
         except Exception as e:
             print(f"❌ Ошибка в вебхуке: {e}")
-            return 'error', 400
+            import traceback
+            traceback.print_exc()
+            return f'error: {str(e)}', 400
     
     return 'method not allowed', 405
 
-async def process_update(update):
-    """Обрабатывает обновление через бота"""
+async def process_update_async(update):
+    """Асинхронная обработка обновления"""
     try:
         if bot_instance:
             await bot_instance.process_update(update)
     except Exception as e:
         print(f"❌ Ошибка обработки обновления: {e}")
+        import traceback
+        traceback.print_exc()
 
 def set_webhook():
     """Устанавливает вебхук на сервере Telegram"""
     try:
-        import requests
-        
         if not WEBHOOK_URL:
             print("⚠️ WEBHOOK_URL не указан, не могу установить вебхук")
             return False
         
-        webhook_url = f"{WEBHOOK_URL}/webhook/{BOT_TOKEN}"
-        response = requests.post(
-            f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook',
-            json={'url': webhook_url}
-        )
+        webhook_url = f"{WEBHOOK_URL}/webhook"
+        print(f"🔗 Устанавливаю webhook: {webhook_url}")
+        
+        # Сначала удаляем старый webhook
+        delete_url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook'
+        delete_response = requests.get(delete_url)
+        print(f"🗑️ Удаление старого webhook: {delete_response.json()}")
+        
+        # Устанавливаем новый webhook
+        set_url = f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook'
+        set_data = {
+            'url': webhook_url,
+            'max_connections': 100,
+            'allowed_updates': ['message', 'callback_query', 'chat_member']
+        }
+        
+        response = requests.post(set_url, json=set_data)
         
         if response.status_code == 200:
-            print(f"✅ Webhook установлен: {webhook_url}")
-            return True
+            result = response.json()
+            if result.get('ok'):
+                print(f"✅ Webhook установлен успешно!")
+                print(f"📝 Description: {result.get('description', 'N/A')}")
+                return True
+            else:
+                print(f"❌ Ошибка установки webhook: {result}")
+                return False
         else:
-            print(f"❌ Ошибка установки webhook: {response.text}")
+            print(f"❌ Ошибка HTTP при установке webhook: {response.status_code}")
+            print(f"Response: {response.text}")
             return False
             
     except Exception as e:
         print(f"❌ Ошибка при установке webhook: {e}")
+        import traceback
+        traceback.print_exc()
         return False
+
+def get_webhook_info():
+    """Получает информацию о текущем webhook"""
+    try:
+        url = f'https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo'
+        response = requests.get(url)
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result.get('ok'):
+                webhook_info = result.get('result', {})
+                print(f"📊 Информация о webhook:")
+                print(f"   URL: {webhook_info.get('url', 'N/A')}")
+                print(f"   Has custom certificate: {webhook_info.get('has_custom_certificate', 'N/A')}")
+                print(f"   Pending update count: {webhook_info.get('pending_update_count', 'N/A')}")
+                print(f"   Last error date: {webhook_info.get('last_error_date', 'N/A')}")
+                print(f"   Last error message: {webhook_info.get('last_error_message', 'N/A')}")
+                return webhook_info
+        return None
+    except Exception as e:
+        print(f"❌ Ошибка получения информации о webhook: {e}")
+        return None
 # ================================================
 
-async def handle_state_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ответа на вопрос о состоянии"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 1:
-        return
-    
-    state = update.message.text
-    
-    if state not in ["👁️ Был внимателен и присутствовал", "🤖 Спал и действовал на автомате", "➡️ Пропустить комментарий"]:
-        await update.message.reply_text(
-            "⚠️ Пожалуйста, выбери один из вариантов:",
-            reply_markup=state_keyboard
-        )
-        return
-    
-    if state == "➡️ Пропустить комментарий":
-        await update.message.reply_text(
-            "👌 Понял, пропускаем.\n\n"
-            "Выбери состояние внимания:",
-            reply_markup=state_keyboard
-        )
-        return
-    
-    user_states[user_id]["data"]["state"] = state
-    user_states[user_id]["step"] = 2
-    
-    await update.message.reply_text(
-        f"✅ *{state}* - записал.\n\n"
-        f"*Хочешь добавить комментарий к состоянию?*\n"
-        f"(Например: 'Был сконцентрирован на работе', 'Мечтал о будущем', 'Автоматически делал рутину')\n\n"
-        f"Если не хочешь, отправь '➡️ Пропустить комментарий'",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("➡️ Пропустить комментарий")]
-        ], resize_keyboard=True, one_time_keyboard=True)
-    )
-
-async def handle_state_comment_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка комментария к состоянию"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 2:
-        return
-    
-    comment = update.message.text.strip()
-    
-    if comment == "➡️ Пропустить комментарий" or comment == "":
-        user_states[user_id]["data"]["state_comment"] = ""
-    else:
-        user_states[user_id]["data"]["state_comment"] = comment
-    
-    user_states[user_id]["step"] = 3
-    
-    await update.message.reply_text(
-        "👌 *Понял.*\n\n"
-        "*2. Помнил ли ты о своей цели в последние 2 часа?*",
-        parse_mode="Markdown",
-        reply_markup=goal_remember_keyboard
-    )
-
-async def handle_goal_remember_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ответа на вопрос 'Помнил ли о цели?'"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 3:
-        return
-    
-    remembered = update.message.text
-    
-    if remembered not in ["✅ Да", "❌ Нет", "➡️ Пропустить комментарий"]:
-        await update.message.reply_text(
-            "⚠️ Пожалуйста, выбери один из вариантов:",
-            reply_markup=goal_remember_keyboard
-        )
-        return
-    
-    if remembered == "➡️ Пропустить комментарий":
-        await update.message.reply_text(
-            "👌 Понял, пропускаем.\n\n"
-            "Помнил ли ты о своей цели в последние 2 часа?",
-            reply_markup=goal_remember_keyboard
-        )
-        return
-    
-    user_states[user_id]["data"]["remembered_goal"] = remembered
-    user_states[user_id]["step"] = 4
-    
-    await update.message.reply_text(
-        f"✅ *{remembered}* - записал.\n\n"
-        f"*Хочешь добавить комментарий о цели?*\n"
-        f"(Например: 'Цель была чёткой', 'Смутно помнил', 'Полностью забыл')\n\n"
-        f"Если не хочешь, отправь '➡️ Пропустить комментарий'",
-        parse_mode="Markdown",
-        reply_markup=ReplyKeyboardMarkup([
-            [KeyboardButton("➡️ Пропустить комментарий")]
-        ], resize_keyboard=True, one_time_keyboard=True)
-    )
-
-async def handle_goal_comment_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка комментария о цели"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 4:
-        return
-    
-    comment = update.message.text.strip()
-    
-    if comment == "➡️ Пропустить комментарий" or comment == "":
-        user_states[user_id]["data"]["goal_comment"] = ""
-    else:
-        user_states[user_id]["data"]["goal_comment"] = comment
-    
-    if user_states[user_id]["data"]["remembered_goal"] == "✅ Да":
-        user_states[user_id]["step"] = 5
-        
-        await update.message.reply_text(
-            "🎯 *Отлично!*\n\n"
-            "*Теперь напиши свои цели, если помнишь о них.*\n"
-            "(Можешь написать кратко, например: 'Изучить Python', 'Сделать проект', 'Поработать над здоровьем')\n\n"
-            "Если не хочешь писать, просто отправь '—'",
-            parse_mode="Markdown",
-            reply_markup=None
-        )
-    else:
-        user_states[user_id]["data"]["goal_text"] = ""
-        user_states[user_id]["step"] = 6
-        
-        await update.message.reply_text(
-            "👌 *Понял.*\n\n"
-            "*3. Сколько минут уделил цели?*\n"
-            "(От 0 до 120, просто отправь число)\n\n"
-            "*Примечание:* Даже если не помнил о цели, мог быть прогресс!",
-            parse_mode="Markdown",
-            reply_markup=None
-        )
-
-async def handle_goal_text_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка текста цели"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 5:
-        return
-    
-    goal_text = update.message.text.strip()
-    
-    user_states[user_id]["data"]["goal_text"] = goal_text if goal_text != "—" else ""
-    user_states[user_id]["step"] = 6
-    
-    if goal_text and goal_text != "—":
-        await update.message.reply_text(
-            f"📝 *Цель записана:* {goal_text[:50]}\n\n"
-            f"*3. Сколько минут уделил цели?*\n"
-            f"(От 0 до 120, просто отправь число)",
-            parse_mode="Markdown"
-        )
-    else:
-        await update.message.reply_text(
-            "👌 *Понял.*\n\n"
-            "*3. Сколько минут уделил цели?*\n"
-            "(От 0 до 120, просто отправь число)",
-            parse_mode="Markdown"
-        )
-
-async def handle_minutes_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ответа на вопрос о времени"""
-    user_id = update.effective_user.id
-    
-    if user_id not in user_states or user_states[user_id]["step"] != 6:
-        return
-    
-    try:
-        minutes = int(update.message.text)
-        if minutes < 0 or minutes > 120:
-            await update.message.reply_text("⚠️ Введи число от 0 до 120")
-            return
-        
-        user_states[user_id]["data"]["minutes"] = minutes
-        record = add_user_record(user_id, user_states[user_id]["data"])
-        
-        state_emoji = "👁️" if record["state"] == "👁️ Был внимателен и присутствовал" else "🤖"
-        
-        report = f"{state_emoji} *Запись сохранена!*\n\n"
-        report += f"• *Состояние:* {record['state']}\n"
-        
-        if record.get("state_comment"):
-            report += f"  *Комментарий:* {record['state_comment']}\n"
-        
-        report += f"• *Помнил о цели:* {record.get('remembered_goal', '—')}\n"
-        
-        if record.get("goal_comment"):
-            report += f"  *Комментарий:* {record['goal_comment']}\n"
-        
-        if record.get("goal_text"):
-            report += f"• *Текст цели:* {record['goal_text']}\n"
-        
-        report += f"• *Время на цель:* {minutes} мин\n"
-        report += f"• *Время:* {datetime.now().strftime('%H:%M')}\n\n"
-        
-        now = datetime.now()
-        next_poll = get_next_poll_time()
-        
-        if now.hour >= END_HOUR:
-            report += f"🌙 *На сегодня опросы завершены.*\n"
-            report += f"Следующий опрос завтра в {START_HOUR}:00\n\n"
-            report += f"📊 В {END_HOUR}:00 получишь ежедневную сводку!"
-        else:
-            time_until_next = (next_poll - now).total_seconds()
-            hours_until = int(time_until_next // 3600)
-            minutes_until = int((time_until_next % 3600) // 60)
-            
-            report += f"⏰ Следующий опрос через {hours_until}ч {minutes_until}мин\n"
-        
-        report += "/stats - посмотреть статистику"
-        
-        await update.message.reply_text(report, parse_mode="Markdown")
-        print(f"📝 Запись сохранена для пользователя {user_id}")
-        
-        del user_states[user_id]
-        
-    except ValueError:
-        await update.message.reply_text("⚠️ Пожалуйста, введи число (например: 45)")
+# Все остальные функции обработки команд остаются без изменений
+# (start_command, handle_state_response, handle_state_comment_response, 
+#  handle_goal_remember_response, handle_goal_comment_response, 
+#  handle_goal_text_response, handle_minutes_response, 
+#  next_poll_command, stop_command, stats_command, 
+#  manual_command, test_poll_command, help_command, handle_message)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start - подписаться на опросы"""
@@ -905,6 +755,229 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
+async def handle_state_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос о состоянии"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 1:
+        return
+    
+    state = update.message.text
+    
+    if state not in ["👁️ Был внимателен и присутствовал", "🤖 Спал и действовал на автомате", "➡️ Пропустить комментарий"]:
+        await update.message.reply_text(
+            "⚠️ Пожалуйста, выбери один из вариантов:",
+            reply_markup=state_keyboard
+        )
+        return
+    
+    if state == "➡️ Пропустить комментарий":
+        await update.message.reply_text(
+            "👌 Понял, пропускаем.\n\n"
+            "Выбери состояние внимания:",
+            reply_markup=state_keyboard
+        )
+        return
+    
+    user_states[user_id]["data"]["state"] = state
+    user_states[user_id]["step"] = 2
+    
+    await update.message.reply_text(
+        f"✅ *{state}* - записал.\n\n"
+        f"*Хочешь добавить комментарий к состоянию?*\n"
+        f"(Например: 'Был сконцентрирован на работе', 'Мечтал о будущем', 'Автоматически делал рутину')\n\n"
+        f"Если не хочешь, отправь '➡️ Пропустить комментарий'",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([
+            [KeyboardButton("➡️ Пропустить комментарий")]
+        ], resize_keyboard=True, one_time_keyboard=True)
+    )
+
+async def handle_state_comment_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка комментария к состоянию"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 2:
+        return
+    
+    comment = update.message.text.strip()
+    
+    if comment == "➡️ Пропустить комментарий" or comment == "":
+        user_states[user_id]["data"]["state_comment"] = ""
+    else:
+        user_states[user_id]["data"]["state_comment"] = comment
+    
+    user_states[user_id]["step"] = 3
+    
+    await update.message.reply_text(
+        "👌 *Понял.*\n\n"
+        "*2. Помнил ли ты о своей цели в последние 2 часа?*",
+        parse_mode="Markdown",
+        reply_markup=goal_remember_keyboard
+    )
+
+async def handle_goal_remember_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос 'Помнил ли о цели?'"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 3:
+        return
+    
+    remembered = update.message.text
+    
+    if remembered not in ["✅ Да", "❌ Нет", "➡️ Пропустить комментарий"]:
+        await update.message.reply_text(
+            "⚠️ Пожалуйста, выбери один из вариантов:",
+            reply_markup=goal_remember_keyboard
+        )
+        return
+    
+    if remembered == "➡️ Пропустить комментарий":
+        await update.message.reply_text(
+            "👌 Понял, пропускаем.\n\n"
+            "Помнил ли ты о своей цели в последние 2 часа?",
+            reply_markup=goal_remember_keyboard
+        )
+        return
+    
+    user_states[user_id]["data"]["remembered_goal"] = remembered
+    user_states[user_id]["step"] = 4
+    
+    await update.message.reply_text(
+        f"✅ *{remembered}* - записал.\n\n"
+        f"*Хочешь добавить комментарий о цели?*\n"
+        f"(Например: 'Цель была чёткой', 'Смутно помнил', 'Полностью забыл')\n\n"
+        f"Если не хочешь, отправь '➡️ Пропустить комментарий'",
+        parse_mode="Markdown",
+        reply_markup=ReplyKeyboardMarkup([
+            [KeyboardButton("➡️ Пропустить комментарий")]
+        ], resize_keyboard=True, one_time_keyboard=True)
+    )
+
+async def handle_goal_comment_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка комментария о цели"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 4:
+        return
+    
+    comment = update.message.text.strip()
+    
+    if comment == "➡️ Пропустить комментарий" or comment == "":
+        user_states[user_id]["data"]["goal_comment"] = ""
+    else:
+        user_states[user_id]["data"]["goal_comment"] = comment
+    
+    if user_states[user_id]["data"]["remembered_goal"] == "✅ Да":
+        user_states[user_id]["step"] = 5
+        
+        await update.message.reply_text(
+            "🎯 *Отлично!*\n\n"
+            "*Теперь напиши свои цели, если помнишь о них.*\n"
+            "(Можешь написать кратко, например: 'Изучить Python', 'Сделать проект', 'Поработать над здоровьем')\n\n"
+            "Если не хочешь писать, просто отправь '—'",
+            parse_mode="Markdown",
+            reply_markup=None
+        )
+    else:
+        user_states[user_id]["data"]["goal_text"] = ""
+        user_states[user_id]["step"] = 6
+        
+        await update.message.reply_text(
+            "👌 *Понял.*\n\n"
+            "*3. Сколько минут уделил цели?*\n"
+            "(От 0 до 120, просто отправь число)\n\n"
+            "*Примечание:* Даже если не помнил о цели, мог быть прогресс!",
+            parse_mode="Markdown",
+            reply_markup=None
+        )
+
+async def handle_goal_text_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка текста цели"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 5:
+        return
+    
+    goal_text = update.message.text.strip()
+    
+    user_states[user_id]["data"]["goal_text"] = goal_text if goal_text != "—" else ""
+    user_states[user_id]["step"] = 6
+    
+    if goal_text and goal_text != "—":
+        await update.message.reply_text(
+            f"📝 *Цель записана:* {goal_text[:50]}\n\n"
+            f"*3. Сколько минут уделил цели?*\n"
+            f"(От 0 до 120, просто отправь число)",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text(
+            "👌 *Понял.*\n\n"
+            "*3. Сколько минут уделил цели?*\n"
+            "(От 0 до 120, просто отправь число)",
+            parse_mode="Markdown"
+        )
+
+async def handle_minutes_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработка ответа на вопрос о времени"""
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states or user_states[user_id]["step"] != 6:
+        return
+    
+    try:
+        minutes = int(update.message.text)
+        if minutes < 0 or minutes > 120:
+            await update.message.reply_text("⚠️ Введи число от 0 до 120")
+            return
+        
+        user_states[user_id]["data"]["minutes"] = minutes
+        record = add_user_record(user_id, user_states[user_id]["data"])
+        
+        state_emoji = "👁️" if record["state"] == "👁️ Был внимателен и присутствовал" else "🤖"
+        
+        report = f"{state_emoji} *Запись сохранена!*\n\n"
+        report += f"• *Состояние:* {record['state']}\n"
+        
+        if record.get("state_comment"):
+            report += f"  *Комментарий:* {record['state_comment']}\n"
+        
+        report += f"• *Помнил о цели:* {record.get('remembered_goal', '—')}\n"
+        
+        if record.get("goal_comment"):
+            report += f"  *Комментарий:* {record['goal_comment']}\n"
+        
+        if record.get("goal_text"):
+            report += f"• *Текст цели:* {record['goal_text']}\n"
+        
+        report += f"• *Время на цель:* {minutes} мин\n"
+        report += f"• *Время:* {datetime.now().strftime('%H:%M')}\n\n"
+        
+        now = datetime.now()
+        next_poll = get_next_poll_time()
+        
+        if now.hour >= END_HOUR:
+            report += f"🌙 *На сегодня опросы завершены.*\n"
+            report += f"Следующий опрос завтра в {START_HOUR}:00\n\n"
+            report += f"📊 В {END_HOUR}:00 получишь ежедневную сводку!"
+        else:
+            time_until_next = (next_poll - now).total_seconds()
+            hours_until = int(time_until_next // 3600)
+            minutes_until = int((time_until_next % 3600) // 60)
+            
+            report += f"⏰ Следующий опрос через {hours_until}ч {minutes_until}мин\n"
+        
+        report += "/stats - посмотреть статистику"
+        
+        await update.message.reply_text(report, parse_mode="Markdown")
+        print(f"📝 Запись сохранена для пользователя {user_id}")
+        
+        del user_states[user_id]
+        
+    except ValueError:
+        await update.message.reply_text("⚠️ Пожалуйста, введи число (например: 45)")
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка всех текстовых сообщений"""
     user_id = update.effective_user.id
@@ -983,6 +1056,10 @@ def run_webhook_mode():
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     
+    # Инициализируем бота
+    print("🤖 Инициализирую бота...")
+    app_bot.initialize()
+    
     # Запускаем таймеры в отдельном потоке
     global stop_timer
     stop_timer = False
@@ -995,6 +1072,9 @@ def run_webhook_mode():
     
     # Устанавливаем webhook
     set_webhook()
+    
+    # Проверяем информацию о webhook
+    get_webhook_info()
     
     return app_bot
 
@@ -1048,36 +1128,25 @@ def main():
             # Режим webhook (для Render/Heroku)
             print(f"🌐 Запуск в режиме WEBHOOK")
             print(f"🔗 Webhook URL: {webhook_url}")
+            print(f"🚀 Порт: {port}")
             
-            # Запускаем Flask в отдельном потоке
-            from threading import Thread
-            
-            flask_thread = Thread(
-                target=lambda: app.run(
-                    host='0.0.0.0', 
-                    port=int(port), 
-                    debug=False, 
-                    use_reloader=False
-                ),
-                daemon=True
-            )
-            flask_thread.start()
-            
-            print(f"✅ Flask сервер запущен на порту {port}")
-            
-            # Инициализируем бота для webhook
+            # Запускаем бота в режиме webhook
             run_webhook_mode()
             
             print("\n✅ Бот работает в режиме webhook!")
             print("📩 Ожидаю обновления от Telegram...")
             
-            # Бесконечный цикл для поддержания работы
-            while True:
-                time.sleep(3600)  # Спим час и проверяем снова
+            # Запускаем Flask
+            app.run(
+                host='0.0.0.0', 
+                port=int(port), 
+                debug=False, 
+                use_reloader=False
+            )
             
         else:
             # Режим polling (для локальной разработки)
-            print("💻 Запуск в режиме POLLING")
+            print("💻 Запуск в режиме POLLING (локально)")
             
             app_bot = run_polling_mode()
             
