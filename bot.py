@@ -1019,8 +1019,8 @@ def main():
             # Запускаем Telegram бота
             # В функции main(), после создания app_bot = Application.builder()...
 # ... добавьте эту строку перед app_bot.run_polling():
-await app_bot.bot.delete_webhook(drop_pending_updates=True)
-app_bot.run_polling()
+            await app_bot.bot.delete_webhook(drop_pending_updates=True)
+            
             app_bot.run_polling()
         else:
             # Локальный запуск (без порта)
@@ -1071,6 +1071,7 @@ if __name__ == "__main__":
         
         # Запускаем Telegram бота
         main()
+
 
 
 
