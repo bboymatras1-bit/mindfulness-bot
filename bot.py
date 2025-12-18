@@ -1050,25 +1050,77 @@ if __name__ == "__main__":
     
     if is_render:
         print("🌐 Запуск на Render")
+        port = int(os.environ.get("PORT", 5000))
         
-        # На Render: запускаем ТОЛЬКО Flask и НЕ запускаем polling!
-        # Flask уже запускается Render автоматически
-        print("✅ Flask сервер запущен Render'ом")
-        print("🤖 Бот готов к работе через webhook")
+        # ====== ВАЖНО: Запускаем Flask для порта ======
+        print(f"🚀 Запускаю Flask сервер на порту {port}")
         
-        # НЕ запускаем main() - это вызывает polling
-        # Вместо этого просто держим процесс живым
+        from threading import Thread
+        import time
+        
+        # Запускаем Flask в отдельном потоке (для порта)
+        flask_thread = Thread(
+            target=lambda: app.run(
+                host='0.0.0.0', 
+                port=port, 
+                debug=False, 
+                use_reloader=False,
+                threaded=True
+            ),
+            daemon=True
+        )
+        flask_thread.start()
+        print(f"✅ Flask сервер запущен на порту {port}")
+        
+        # ====== НАСТРАИВАЕМ WEBHOOK ======
+        print("🔧 Настраиваю Telegram webhook...")
+        
+        # Ждем, чтобы Flask точно запустился
+        time.sleep(3)
+        
+        # Создаем бота и настраиваем webhook
+        try:
+            # Создаем экземпляр бота для настройки webhook
+            from telegram import Bot
+            import asyncio
+            
+            bot = Bot(token=BOT_TOKEN)
+            
+            # Устанавливаем webhook
+            webhook_url = f"https://mindfulness-bot-lmv6.onrender.com/{BOT_TOKEN}"
+            
+            async def setup_webhook():
+                # Удаляем старый webhook
+                await bot.delete_webhook(drop_pending_updates=True)
+                print("🗑️ Старый webhook удален")
+                
+                # Устанавливаем новый
+                await bot.set_webhook(webhook_url)
+                print(f"✅ Webhook установлен: {webhook_url}")
+                
+                # Проверяем
+                webhook_info = await bot.get_webhook_info()
+                print(f"📊 Webhook информация: {webhook_info.url}")
+            
+            asyncio.run(setup_webhook())
+            
+        except Exception as e:
+            print(f"❌ Ошибка настройки webhook: {e}")
+        
+        # ====== ДЕРЖИМ ПРОЦЕСС ЖИВЫМ ======
+        print("🤖 Бот готов! Ожидаю сообщения через webhook...")
+        print("📞 Телеграм будет отправлять сообщения на:", webhook_url)
+        
         try:
             # Бесконечный цикл чтобы процесс не завершался
             while True:
-                import time
                 time.sleep(3600)  # Спим 1 час
         except KeyboardInterrupt:
             print("\n🛑 Бот остановлен")
             
     else:
         print("💻 Локальный запуск")
-        # Локально запускаем как обычно
+        # Локально запускаем как обычно (polling)
         main()
 
 
