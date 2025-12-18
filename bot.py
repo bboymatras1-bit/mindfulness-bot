@@ -349,45 +349,45 @@ def health():
     """Health check endpoint"""
     return "OK", 200
 
+@app.route(f'/{BOT_TOKEN}', methods=['POST'])
+def webhook_legacy():
+    """Старый endpoint для вебхука (для обратной совместимости)"""
+    return webhook()
+
 @app.route(f'/webhook', methods=['POST'])
 def webhook():
-    """Endpoint для вебхука от Telegram"""
+    """Основной endpoint для вебхука от Telegram"""
     if request.method == "POST":
         try:
             # Получаем данные от Telegram
             update_data = request.get_json()
             
             if update_data:
-                print(f"📩 Получено обновление: {update_data.get('update_id')}")
+                update_id = update_data.get('update_id', 'unknown')
+                print(f"📩 Получено обновление #{update_id}")
                 
                 # Создаем Update объект
-                update = Update.de_json(update_data, bot_instance.bot)
+                update = Update.de_json(update_data, bot_instance.bot if bot_instance else None)
                 
                 # Обрабатываем обновление в асинхронном цикле
                 if update and bot_instance:
-                    # Используем thread pool для обработки
-                    import concurrent.futures
+                    # Используем run_coroutine_threadsafe для обработки
+                    future = asyncio.run_coroutine_threadsafe(
+                        process_update_async(update),
+                        loop
+                    )
                     
-                    def process_update_sync():
-                        try:
-                            # Запускаем обработку в event loop
-                            asyncio.run_coroutine_threadsafe(
-                                process_update_async(update),
-                                loop
-                            ).result(timeout=5)
-                        except Exception as e:
-                            print(f"❌ Ошибка обработки обновления: {e}")
-                    
-                    # Запускаем в отдельном потоке
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-                        future = executor.submit(process_update_sync)
-                        try:
-                            future.result(timeout=3)
-                        except concurrent.futures.TimeoutError:
-                            print("⚠️ Таймаут обработки обновления")
+                    # Ждем результат с таймаутом
+                    try:
+                        future.result(timeout=5)
+                    except asyncio.TimeoutError:
+                        print(f"⚠️ Таймаут обработки обновления #{update_id}")
+                    except Exception as e:
+                        print(f"❌ Ошибка при ожидании результата: {e}")
                 
                 return 'ok', 200
             else:
+                print("⚠️ Пустое обновление")
                 return 'no data', 400
             
         except Exception as e:
@@ -413,15 +413,23 @@ def set_webhook():
     try:
         if not WEBHOOK_URL:
             print("⚠️ WEBHOOK_URL не указан, не могу установить вебхук")
+            print("💡 Для локального тестирования установите:")
+            print("   export WEBHOOK_URL=https://ваш-ngrok-url.ngrok.io")
             return False
         
-        webhook_url = f"{WEBHOOK_URL}/webhook"
+        webhook_url = f"{WEBHOOK_URL}/{BOT_TOKEN}"
         print(f"🔗 Устанавливаю webhook: {webhook_url}")
         
         # Сначала удаляем старый webhook
         delete_url = f'https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook'
-        delete_response = requests.get(delete_url)
-        print(f"🗑️ Удаление старого webhook: {delete_response.json()}")
+        try:
+            delete_response = requests.get(delete_url, timeout=10)
+            print(f"🗑️ Удаление старого webhook: {delete_response.json().get('description', 'OK')}")
+        except Exception as e:
+            print(f"⚠️ Не удалось удалить старый webhook: {e}")
+        
+        # Ждем немного
+        time.sleep(1)
         
         # Устанавливаем новый webhook
         set_url = f'https://api.telegram.org/bot{BOT_TOKEN}/setWebhook'
@@ -431,24 +439,32 @@ def set_webhook():
             'allowed_updates': ['message', 'callback_query', 'chat_member']
         }
         
-        response = requests.post(set_url, json=set_data)
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result.get('ok'):
-                print(f"✅ Webhook установлен успешно!")
-                print(f"📝 Description: {result.get('description', 'N/A')}")
-                return True
+        try:
+            response = requests.post(set_url, json=set_data, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('ok'):
+                    print(f"✅ Webhook установлен успешно!")
+                    print(f"📝 Description: {result.get('description', 'N/A')}")
+                    return True
+                else:
+                    print(f"❌ Ошибка установки webhook: {result}")
+                    return False
             else:
-                print(f"❌ Ошибка установки webhook: {result}")
+                print(f"❌ Ошибка HTTP при установке webhook: {response.status_code}")
+                print(f"Response: {response.text}")
                 return False
-        else:
-            print(f"❌ Ошибка HTTP при установке webhook: {response.status_code}")
-            print(f"Response: {response.text}")
+                
+        except requests.exceptions.Timeout:
+            print("❌ Таймаут при установке webhook")
+            return False
+        except Exception as e:
+            print(f"❌ Ошибка при установке webhook: {e}")
             return False
             
     except Exception as e:
-        print(f"❌ Ошибка при установке webhook: {e}")
+        print(f"❌ Критическая ошибка при установке webhook: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -457,7 +473,7 @@ def get_webhook_info():
     """Получает информацию о текущем webhook"""
     try:
         url = f'https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo'
-        response = requests.get(url)
+        response = requests.get(url, timeout=10)
         
         if response.status_code == 200:
             result = response.json()
@@ -474,14 +490,29 @@ def get_webhook_info():
     except Exception as e:
         print(f"❌ Ошибка получения информации о webhook: {e}")
         return None
+
+def check_webhook():
+    """Проверяет, правильно ли настроен webhook"""
+    try:
+        webhook_info = get_webhook_info()
+        if webhook_info:
+            url = webhook_info.get('url', '')
+            if url and WEBHOOK_URL and WEBHOOK_URL in url:
+                print(f"✅ Webhook настроен правильно: {url}")
+                return True
+            else:
+                print(f"⚠️ Webhook настроен на другой URL: {url}")
+                print(f"💡 Ожидался URL содержащий: {WEBHOOK_URL}")
+                return False
+        return False
+    except Exception as e:
+        print(f"❌ Ошибка проверки webhook: {e}")
+        return False
 # ================================================
 
-# Все остальные функции обработки команд остаются без изменений
-# (start_command, handle_state_response, handle_state_comment_response, 
-#  handle_goal_remember_response, handle_goal_comment_response, 
-#  handle_goal_text_response, handle_minutes_response, 
-#  next_poll_command, stop_command, stats_command, 
-#  manual_command, test_poll_command, help_command, handle_message)
+# Все функции обработки команд (start_command, handle_state_response и т.д.)
+# остаются БЕЗ ИЗМЕНЕНИЙ, как в предыдущем коде
+# Я сокращу их для читаемости, но в реальном коде они должны быть полностью
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start - подписаться на опросы"""
@@ -1071,10 +1102,15 @@ def run_webhook_mode():
     scheduler_thread.start()
     
     # Устанавливаем webhook
-    set_webhook()
+    if set_webhook():
+        print("✅ Webhook успешно установлен")
+    else:
+        print("❌ Не удалось установить webhook")
+        print("💡 Попробуйте вручную установить webhook:")
+        print(f"   curl -X POST https://api.telegram.org/bot{BOT_TOKEN}/setWebhook -d 'url={WEBHOOK_URL}/{BOT_TOKEN}'")
     
     # Проверяем информацию о webhook
-    get_webhook_info()
+    check_webhook()
     
     return app_bot
 
@@ -1135,13 +1171,15 @@ def main():
             
             print("\n✅ Бот работает в режиме webhook!")
             print("📩 Ожидаю обновления от Telegram...")
+            print(f"📝 Webhook URL: {webhook_url}/{BOT_TOKEN}")
             
             # Запускаем Flask
             app.run(
                 host='0.0.0.0', 
                 port=int(port), 
                 debug=False, 
-                use_reloader=False
+                use_reloader=False,
+                threaded=True
             )
             
         else:
