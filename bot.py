@@ -1,72 +1,94 @@
 import os
 import time
 import threading
-import schedule
 from datetime import datetime
 from flask import Flask
 from telegram import Bot
 
-# ========== НАСТРОЙКИ ==========
+# ========== ПОЛУЧАЕМ ТОКЕН ТОЛЬКО ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('8424450945:AAE6uWv4tlADMTfH-rUNojYEIUVqwTei9JY')
+CHAT_ID = os.environ.get('CHAT_ID')
 PORT = int(os.environ.get('PORT', 10000))
 
-# ========== FLASK ДЛЯ RENDER ==========
+# КРИТИЧЕСКАЯ ПРОВЕРКА - если нет токена, бот не запустится
+if not BOT_TOKEN:
+    print("❌ ОШИБКА: Переменная окружения BOT_TOKEN не найдена!")
+    print("   Добавь её в настройках Render: Environment -> Add Environment Variable")
+    print("   Key: BOT_TOKEN")
+    print("   Value: твой_токен_бота")
+    exit(1)
+
+if not CHAT_ID:
+    print("❌ ОШИБКА: Переменная окружения CHAT_ID не найдена!")
+    print("   Добавь её в настройках Render")
+    print("   Key: CHAT_ID")
+    print("   Value: твой_chat_id (получи в @userinfobot)")
+    exit(1)
+
+print("=" * 50)
+print("🤖 БОТ-КРИВЕТКА")
+print("=" * 50)
+print(f"✅ Токен загружен: {BOT_TOKEN[:10]}...")
+print(f"✅ Чат ID: {CHAT_ID}")
+print(f"✅ Порт: {PORT}")
+
+# ========== FLASK ДЛЯ RENDER (ОБЯЗАТЕЛЬНО) ==========
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "🤖 Бот-Криветка работает!"
+    return "🤖 Бот работает на Render! <a href='/health'>/health</a>"
 
 @app.route('/health')
 def health():
     return "OK", 200
 
 def run_flask():
+    """Запускает Flask сервер (нужен Render для проверки порта)"""
     app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
 
-# ========== ОСНОВНАЯ ЛОГИКА ==========
-def send_message():
+# ========== ОСНОВНАЯ ЛОГИКА БОТА ==========
+def send_crivetka():
+    """Отправляет 'Привет Криветка' в Telegram"""
     try:
         bot = Bot(token=BOT_TOKEN)
-        current_time = datetime.now().strftime("%H:%M:%S")
-        bot.send_message(chat_id=CHAT_ID, text=f"🦐 Привет Криветка! {current_time}")
-        print(f"✅ Отправлено в {current_time}")
+        now = datetime.now().strftime("%H:%M:%S")
+        message = f"🦐 Привет Криветка!\nВремя: {now}"
+        bot.send_message(chat_id=CHAT_ID, text=message)
+        print(f"✅ Сообщение отправлено в {now}")
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        print(f"❌ Ошибка при отправке: {e}")
 
-def run_scheduler():
-    schedule.every(1).minutes.do(send_message)
-    send_message()  # Первое сообщение сразу
-    print("⏰ Планировщик запущен")
+def message_loop():
+    """Бесконечный цикл - отправка каждую минуту"""
+    print("⏰ Запуск цикла сообщений...")
+    
+    # Отправляем первое сообщение сразу
+    send_crivetka()
+    
+    # Затем каждые 60 секунд
     while True:
-        schedule.run_pending()
-        time.sleep(1)
+        time.sleep(60)
+        send_crivetka()
 
-# ========== ЗАПУСК ==========
+# ========== ЗАПУСК ВСЕГО ==========
 if __name__ == "__main__":
-    print("🤖 Запуск бота...")
-    
-    # Проверка токена и chat_id
-    if not BOT_TOKEN or not CHAT_ID:
-        print("❌ Задай BOT_TOKEN и CHAT_ID в настройках Render!")
-        exit(1)
-    
-    # Запуск Flask
+    # 1. Запускаем Flask в отдельном потоке (для Render)
     flask_thread = threading.Thread(target=run_flask, daemon=True)
     flask_thread.start()
-    time.sleep(2)
-    print(f"🌐 Flask запущен на порту {PORT}")
+    time.sleep(2)  # Даем Flask время запуститься
+    print(f"🌐 Flask сервер запущен на порту {PORT}")
     
-    # Запуск планировщика
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
+    # 2. Запускаем бота, который отправляет сообщения
+    bot_thread = threading.Thread(target=message_loop, daemon=True)
+    bot_thread.start()
     
-    print("✅ Бот готов. Сообщения каждую минуту.")
+    print("✅ Все компоненты запущены")
+    print("🔄 Сообщения будут отправляться каждую минуту...")
     
-    # Держим программу активной
+    # 3. Держим основной поток активным
     try:
         while True:
-            time.sleep(60)
+            time.sleep(10)
     except KeyboardInterrupt:
-        print("\n🛑 Остановка")
+        print("\n🛑 Бот остановлен")
