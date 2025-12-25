@@ -9,7 +9,7 @@ from telegram.error import TelegramError
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')  # ID твоего чата с ботом
+CHAT_ID = os.environ.get('8424450945:AAE6uWv4tlADMTfH-rUNojYEIUVqwTei9JY')  # ID твоего чата с ботом
 PORT = int(os.environ.get('PORT', 10000))
 
 if not BOT_TOKEN or not CHAT_ID:
@@ -106,3 +106,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
