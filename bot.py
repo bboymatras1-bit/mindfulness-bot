@@ -1,3 +1,32 @@
+from flask import Flask
+from threading import Thread
+import os
+
+# Создаем простой веб-сервер, чтобы Render видел открытый порт
+web_app = Flask(__name__)
+port = int(os.environ.get("PORT", 10000))  # Render сам назначает порт
+
+@web_app.route('/')
+def home():
+    return "Бот работает! ✅"
+
+@web_app.route('/health')
+def health():
+    return "OK", 200
+
+# Функция для запуска веб-сервера в отдельном потоке
+def run_web_server():
+    web_app.run(host='0.0.0.0', port=port)
+
+# Запускаем веб-сервер до запуска бота
+web_thread = Thread(target=run_web_server, daemon=True)
+web_thread.start()
+
+print(f"🌐 Веб-сервер запущен на порту {port}")
+
+# ДАЛЕЕ ИДЕТ ТВОЙ ОРИГИНАЛЬНЫЙ КОД БОТА...
+# 
+
 # mindfulness_bot_v5.py - Бот с опросами с 09:00 до 21:00
 import time
 import threading
@@ -975,3 +1004,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
