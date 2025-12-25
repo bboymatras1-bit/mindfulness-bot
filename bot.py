@@ -1,94 +1,118 @@
+"""
+ТЕСТОВЫЙ БОТ - проверяет окружение без запуска реального бота
+"""
 import os
-import time
-import threading
+import sys
+import subprocess
 from datetime import datetime
-from flask import Flask
-from telegram import Bot
 
-# ========== ПОЛУЧАЕМ ТОКЕН ТОЛЬКО ИЗ ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ==========
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
-PORT = int(os.environ.get('PORT', 10000))
+print("=" * 60)
+print("🤖 ТЕСТОВЫЙ БОТ - ДИАГНОСТИКА RENDER")
+print("=" * 60)
 
-# КРИТИЧЕСКАЯ ПРОВЕРКА - если нет токена, бот не запустится
-if not BOT_TOKEN:
-    print("❌ ОШИБКА: Переменная окружения BOT_TOKEN не найдена!")
-    print("   Добавь её в настройках Render: Environment -> Add Environment Variable")
-    print("   Key: BOT_TOKEN")
-    print("   Value: твой_токен_бота")
-    exit(1)
+# Шаг 1: Проверяем, где мы и что вокруг
+print("\n1️⃣ ПРОВЕРКА ФАЙЛОВ В ПРОЕКТЕ:")
+print("-" * 40)
+current_dir = os.getcwd()
+print(f"📁 Текущая папка: {current_dir}")
 
-if not CHAT_ID:
-    print("❌ ОШИБКА: Переменная окружения CHAT_ID не найдена!")
-    print("   Добавь её в настройках Render")
-    print("   Key: CHAT_ID")
-    print("   Value: твой_chat_id (получи в @userinfobot)")
-    exit(1)
+print("\n📂 Список файлов:")
+try:
+    files = os.listdir('.')
+    for file in files:
+        file_type = "📄" if os.path.isfile(file) else "📁"
+        print(f"   {file_type} {file}")
+except Exception as e:
+    print(f"   ❌ Ошибка: {e}")
 
-print("=" * 50)
-print("🤖 БОТ-КРИВЕТКА")
-print("=" * 50)
-print(f"✅ Токен загружен: {BOT_TOKEN[:10]}...")
-print(f"✅ Чат ID: {CHAT_ID}")
-print(f"✅ Порт: {PORT}")
-
-# ========== FLASK ДЛЯ RENDER (ОБЯЗАТЕЛЬНО) ==========
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Бот работает на Render! <a href='/health'>/health</a>"
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-def run_flask():
-    """Запускает Flask сервер (нужен Render для проверки порта)"""
-    app.run(host='0.0.0.0', port=PORT, debug=False, use_reloader=False)
-
-# ========== ОСНОВНАЯ ЛОГИКА БОТА ==========
-def send_crivetka():
-    """Отправляет 'Привет Криветка' в Telegram"""
+# Шаг 2: Проверяем requirements.txt
+print("\n2️⃣ ПРОВЕРКА requirements.txt:")
+print("-" * 40)
+req_file = 'requirements.txt'
+if os.path.exists(req_file):
+    print(f"✅ Файл '{req_file}' НАЙДЕН")
+    
+    # Читаем содержимое
     try:
-        bot = Bot(token=BOT_TOKEN)
-        now = datetime.now().strftime("%H:%M:%S")
-        message = f"🦐 Привет Криветка!\nВремя: {now}"
-        bot.send_message(chat_id=CHAT_ID, text=message)
-        print(f"✅ Сообщение отправлено в {now}")
+        with open(req_file, 'r', encoding='utf-8') as f:
+            content = f.read().strip()
+            if content:
+                print(f"📋 Содержимое файла:")
+                lines = content.split('\n')
+                for i, line in enumerate(lines, 1):
+                    print(f"   {i:2d}. {line}")
+            else:
+                print("⚠️ Файл пустой!")
     except Exception as e:
-        print(f"❌ Ошибка при отправке: {e}")
+        print(f"❌ Не могу прочитать файл: {e}")
+else:
+    print(f"❌ Файл '{req_file}' НЕ НАЙДЕН!")
 
-def message_loop():
-    """Бесконечный цикл - отправка каждую минуту"""
-    print("⏰ Запуск цикла сообщений...")
+# Шаг 3: Проверяем установленные пакеты
+print("\n3️⃣ ПРОВЕРКА УСТАНОВЛЕННЫХ ПАКЕТОВ:")
+print("-" * 40)
+try:
+    # Проверяем конкретные пакеты
+    test_packages = ['flask', 'python-telegram-bot', 'python-dotenv']
     
-    # Отправляем первое сообщение сразу
-    send_crivetka()
-    
-    # Затем каждые 60 секунд
-    while True:
-        time.sleep(60)
-        send_crivetka()
+    for package in test_packages:
+        try:
+            __import__(package.replace('-', '_'))
+            print(f"✅ {package} - УСТАНОВЛЕН")
+        except ImportError:
+            print(f"❌ {package} - НЕ УСТАНОВЛЕН")
+except Exception as e:
+    print(f"⚠️ Ошибка проверки пакетов: {e}")
 
-# ========== ЗАПУСК ВСЕГО ==========
-if __name__ == "__main__":
-    # 1. Запускаем Flask в отдельном потоке (для Render)
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    time.sleep(2)  # Даем Flask время запуститься
-    print(f"🌐 Flask сервер запущен на порту {PORT}")
+# Шаг 4: Проверяем переменные окружения
+print("\n4️⃣ ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
+print("-" * 40)
+
+# Ключи, которые ищем
+env_keys = ['BOT_TOKEN', 'CHAT_ID', 'PORT', 'PYTHON_VERSION', 'RENDER']
+
+print("🔍 Поиск переменных окружения:")
+for key in env_keys:
+    value = os.environ.get(key)
+    if value:
+        # Маскируем токен для безопасности
+        if 'TOKEN' in key:
+            masked = value[:10] + '...' if len(value) > 10 else '***'
+            print(f"   ✅ {key} = {masked}")
+        else:
+            print(f"   ✅ {key} = {value}")
+    else:
+        print(f"   ❌ {key} - НЕ НАЙДЕНА")
+
+# Шаг 5: Проверяем Python и систему
+print("\n5️⃣ ИНФОРМАЦИЯ О СИСТЕМЕ:")
+print("-" * 40)
+print(f"🐍 Python версия: {sys.version}")
+print(f"📦 Путь Python: {sys.executable}")
+print(f"🕐 Время сервера: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
+# Шаг 6: Простая проверка Flask
+print("\n6️⃣ ТЕСТ FLASK (минимальный):")
+print("-" * 40)
+try:
+    from flask import Flask
+    app = Flask(__name__)
     
-    # 2. Запускаем бота, который отправляет сообщения
-    bot_thread = threading.Thread(target=message_loop, daemon=True)
-    bot_thread.start()
+    @app.route('/test')
+    def test():
+        return "✅ Flask работает!"
     
-    print("✅ Все компоненты запущены")
-    print("🔄 Сообщения будут отправляться каждую минуту...")
-    
-    # 3. Держим основной поток активным
-    try:
-        while True:
-            time.sleep(10)
-    except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен")
+    print("✅ Flask импортируется без ошибок")
+    print("   Сервер НЕ запускается (это только тест)")
+except ImportError as e:
+    print(f"❌ Ошибка импорта Flask: {e}")
+except Exception as e:
+    print(f"⚠️ Другая ошибка с Flask: {e}")
+
+print("\n" + "=" * 60)
+print("🔚 ТЕСТ ЗАВЕРШЕН")
+print("=" * 60)
+
+# ВАЖНО: НЕ запускаем вечный цикл!
+print("\n💡 Код завершается. Это нормально для теста.")
+print("   Для реального бота нужно app.run() или цикл.")
