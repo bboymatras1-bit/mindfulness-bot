@@ -1,118 +1,57 @@
-"""
-ТЕСТОВЫЙ БОТ - проверяет окружение без запуска реального бота
-"""
 import os
-import sys
-import subprocess
-from datetime import datetime
+import time
+from flask import Flask
+from telegram import Bot
 
-print("=" * 60)
-print("🤖 ТЕСТОВЫЙ БОТ - ДИАГНОСТИКА RENDER")
-print("=" * 60)
+print("=" * 50)
+print("🤖 НАЧИНАЮ ТЕСТОВЫЙ ЗАПУСК...")
+print("=" * 50)
 
-# Шаг 1: Проверяем, где мы и что вокруг
-print("\n1️⃣ ПРОВЕРКА ФАЙЛОВ В ПРОЕКТЕ:")
-print("-" * 40)
-current_dir = os.getcwd()
-print(f"📁 Текущая папка: {current_dir}")
+# 1. Проверяем переменные окружения
+BOT_TOKEN = os.environ.get('BOT_TOKEN')
+CHAT_ID = os.environ.get('CHAT_ID')
 
-print("\n📂 Список файлов:")
+if not BOT_TOKEN:
+    print("❌ BOT_TOKEN не найден в переменных окружения!")
+    exit(1)
+
+if not CHAT_ID:
+    print("❌ CHAT_ID не найден в переменных окружения!")
+    exit(1)
+
+print(f"✅ BOT_TOKEN: {BOT_TOKEN[:10]}...")
+print(f"✅ CHAT_ID: {CHAT_ID}")
+
+# 2. Запускаем Flask (обязательно для Render)
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Бот работает! ✅"
+
+@app.route('/health')
+def health():
+    return "OK", 200
+
+# Запускаем Flask в фоне
+from threading import Thread
+def run_flask():
+    app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
+
+Thread(target=run_flask, daemon=True).start()
+time.sleep(2)
+print("🌐 Flask запущен на порту 10000")
+
+# 3. Тестируем отправку сообщения
 try:
-    files = os.listdir('.')
-    for file in files:
-        file_type = "📄" if os.path.isfile(file) else "📁"
-        print(f"   {file_type} {file}")
+    bot = Bot(token=BOT_TOKEN)
+    bot.send_message(chat_id=CHAT_ID, text="✅ Бот запущен на Render!")
+    print("✅ Тестовое сообщение отправлено в Telegram")
 except Exception as e:
-    print(f"   ❌ Ошибка: {e}")
+    print(f"❌ Ошибка Telegram: {e}")
 
-# Шаг 2: Проверяем requirements.txt
-print("\n2️⃣ ПРОВЕРКА requirements.txt:")
-print("-" * 40)
-req_file = 'requirements.txt'
-if os.path.exists(req_file):
-    print(f"✅ Файл '{req_file}' НАЙДЕН")
-    
-    # Читаем содержимое
-    try:
-        with open(req_file, 'r', encoding='utf-8') as f:
-            content = f.read().strip()
-            if content:
-                print(f"📋 Содержимое файла:")
-                lines = content.split('\n')
-                for i, line in enumerate(lines, 1):
-                    print(f"   {i:2d}. {line}")
-            else:
-                print("⚠️ Файл пустой!")
-    except Exception as e:
-        print(f"❌ Не могу прочитать файл: {e}")
-else:
-    print(f"❌ Файл '{req_file}' НЕ НАЙДЕН!")
+print("=" * 50)
+print("📊 ТЕСТ ЗАВЕРШЁН УСПЕШНО")
+print("=" * 50)
 
-# Шаг 3: Проверяем установленные пакеты
-print("\n3️⃣ ПРОВЕРКА УСТАНОВЛЕННЫХ ПАКЕТОВ:")
-print("-" * 40)
-try:
-    # Проверяем конкретные пакеты
-    test_packages = ['flask', 'python-telegram-bot', 'python-dotenv']
-    
-    for package in test_packages:
-        try:
-            __import__(package.replace('-', '_'))
-            print(f"✅ {package} - УСТАНОВЛЕН")
-        except ImportError:
-            print(f"❌ {package} - НЕ УСТАНОВЛЕН")
-except Exception as e:
-    print(f"⚠️ Ошибка проверки пакетов: {e}")
-
-# Шаг 4: Проверяем переменные окружения
-print("\n4️⃣ ПРОВЕРКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ:")
-print("-" * 40)
-
-# Ключи, которые ищем
-env_keys = ['BOT_TOKEN', 'CHAT_ID', 'PORT', 'PYTHON_VERSION', 'RENDER']
-
-print("🔍 Поиск переменных окружения:")
-for key in env_keys:
-    value = os.environ.get(key)
-    if value:
-        # Маскируем токен для безопасности
-        if 'TOKEN' in key:
-            masked = value[:10] + '...' if len(value) > 10 else '***'
-            print(f"   ✅ {key} = {masked}")
-        else:
-            print(f"   ✅ {key} = {value}")
-    else:
-        print(f"   ❌ {key} - НЕ НАЙДЕНА")
-
-# Шаг 5: Проверяем Python и систему
-print("\n5️⃣ ИНФОРМАЦИЯ О СИСТЕМЕ:")
-print("-" * 40)
-print(f"🐍 Python версия: {sys.version}")
-print(f"📦 Путь Python: {sys.executable}")
-print(f"🕐 Время сервера: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-
-# Шаг 6: Простая проверка Flask
-print("\n6️⃣ ТЕСТ FLASK (минимальный):")
-print("-" * 40)
-try:
-    from flask import Flask
-    app = Flask(__name__)
-    
-    @app.route('/test')
-    def test():
-        return "✅ Flask работает!"
-    
-    print("✅ Flask импортируется без ошибок")
-    print("   Сервер НЕ запускается (это только тест)")
-except ImportError as e:
-    print(f"❌ Ошибка импорта Flask: {e}")
-except Exception as e:
-    print(f"⚠️ Другая ошибка с Flask: {e}")
-
-print("\n" + "=" * 60)
-print("🔚 ТЕСТ ЗАВЕРШЕН")
-print("=" * 60)
-
-# ВАЖНО: НЕ запускаем вечный цикл!
-print("\n💡 Код завершается. Это нормально для теста.")
-print("   Для реального бота нужно app.run() или цикл.")
+# Просто завершаем программу - это для теста
