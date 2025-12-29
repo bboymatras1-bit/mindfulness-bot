@@ -18,23 +18,9 @@ if not BOT_TOKEN:
 
 print(f"✅ Токен получен: {BOT_TOKEN[:10]}...")
 
-# 2. Flask для Render
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Бот работает! Он отправляет 'Привет Криветка' каждую минуту."
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-def run_flask():
-    app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
-
-# 3. Асинхронная функция для получения chat_id
+# 2. Асинхронные функции для работы с Telegram
 async def get_chat_id_async():
-    """Асинхронно получает chat_id из обновлений"""
+    """Асинхронно получает chat_id"""
     try:
         bot = Bot(token=BOT_TOKEN)
         updates = await bot.get_updates()
@@ -64,53 +50,82 @@ async def send_message_async(chat_id):
         print(f"❌ Ошибка отправки: {e}")
         return False
 
-# 4. Синхронные обёртки для асинхронных функций
+# 3. Синхронные обёртки
 def get_chat_id():
-    """Синхронная обёртка для получения chat_id"""
     return asyncio.run(get_chat_id_async())
 
 def send_message(chat_id):
-    """Синхронная обёртка для отправки сообщения"""
     return asyncio.run(send_message_async(chat_id))
 
-# 5. Главный цикл
-def main_loop():
+# 4. Flask для Render (ЗАПУСКАЕМ ПОТОМ, ПОСЛЕ ОСНОВНОГО ЦИКЛА!)
+def run_flask():
+    """Запускает Flask в отдельном процессе"""
+    app = Flask(__name__)
+    
+    @app.route('/')
+    def home():
+        return "🤖 Бот работает! Он отправляет 'Привет Криветка' каждую минуту."
+    
+    @app.route('/health')
+    def health():
+        return "OK", 200
+    
+    @app.route('/ping')
+    def ping():
+        return "pong", 200
+    
+    app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
+
+# 5. Основной цикл бота
+def bot_main_loop():
+    """Основной цикл отправки сообщений"""
     print("⏰ Запуск цикла сообщений...")
+    print("📱 Найди бота в Telegram и напиши ему любое сообщение!")
     
     chat_id = None
-    bot_started = False
+    attempts = 0
     
     while True:
         if not chat_id:
-            print("🔄 Ищу chat_id...")
+            print(f"🔄 Попытка {attempts+1}: ищу chat_id...")
             chat_id = get_chat_id()
+            attempts += 1
             
-            if chat_id and not bot_started:
-                print("🎉 Бот готов к отправке сообщений!")
-                bot_started = True
-                
-        else:
-            # Отправляем сообщение
-            success = send_message(chat_id)
-            
-            if not success:
-                print("🔄 Сбрасываю chat_id из-за ошибки...")
-                chat_id = None
-                time.sleep(5)  # Пауза перед повторной попыткой
+            if not chat_id:
+                print("⏳ Жду 30 секунд перед следующей попыткой...")
+                time.sleep(30)
                 continue
+            else:
+                print("🎉 Chat_id найден! Начинаю отправку...")
+                # Отправляем первое сообщение сразу
+                send_message(chat_id)
         
-        time.sleep(60)  # Ждём 60 секунд
+        # Отправляем регулярные сообщения
+        try:
+            send_message(chat_id)
+        except Exception as e:
+            print(f"❌ Ошибка: {e}. Сбрасываю chat_id...")
+            chat_id = None
+            continue
+        
+        # Ждём 60 секунд до следующей отправки
+        print(f"⏳ Следующее сообщение через 60 секунд...")
+        time.sleep(60)
 
-# 6. Запуск всего
-if __name__ == "__main__":
+# 6. Главная функция
+def main():
+    """Запускает всё"""
     # Запускаем Flask в отдельном потоке
-    Thread(target=run_flask, daemon=True).start()
-    time.sleep(2)
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    time.sleep(3)  # Даём Flask время запуститься
     print("🌐 Flask запущен на порту 10000")
-    print("📱 Теперь найди своего бота в Telegram и напиши ему любое сообщение!")
     
-    # Запускаем основной цикл
+    # Запускаем основной цикл бота
     try:
-        main_loop()
+        bot_main_loop()
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен")
+
+if __name__ == "__main__":
+    main()
