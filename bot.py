@@ -1,128 +1,70 @@
 import os
 import time
-import asyncio
-from threading import Thread
+from multiprocessing import Process
 from datetime import datetime
 from flask import Flask
-from telegram import Bot
+import requests  # Для HTTP запросов к Telegram API
 
-print("=" * 50)
-print("🤖 БОТ: ПРИВЕТ КРИВЕТКА")
-print("=" * 50)
+print("🤖 ПРОСТОЙ РАБОЧИЙ БОТ")
 
-# 1. Получаем токен
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN не найден!")
+    print("❌ Нет токена!")
     exit(1)
 
-print(f"✅ Токен получен: {BOT_TOKEN[:10]}...")
+print(f"✅ Токен: {BOT_TOKEN[:10]}...")
 
-# 2. Flask ДОЛЖЕН БЫТЬ ОПРЕДЕЛЁН ДО создания потоков
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Бот работает! Он отправляет 'Привет Криветка' каждую минуту."
-
-@app.route('/health')
-def health():
-    return "OK", 200
-
-@app.route('/ping')
-def ping():
-    return "pong", 200
-
-def run_flask():
-    """Запускает Flask в отдельном потоке"""
+# 1. Flask в отдельном процессе
+def flask_server():
+    app = Flask(__name__)
+    @app.route('/') 
+    def home(): return "Бот работает"
+    @app.route('/health') 
+    def health(): return "OK", 200
+    print("[FLASK] Сервер запущен")
     app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
 
-# 3. Асинхронные функции для работы с Telegram
-async def get_chat_id_async():
-    """Асинхронно получает chat_id"""
+# Запускаем Flask
+p = Process(target=flask_server, daemon=True)
+p.start()
+time.sleep(3)
+print("🌐 Flask работает")
+
+# 2. Простой цикл бота
+print("⏰ Начинаю работу...")
+
+while True:
     try:
-        bot = Bot(token=BOT_TOKEN)
-        updates = await bot.get_updates()
+        # Пробуем получить обновления
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
+        response = requests.get(url, timeout=10)
         
-        if updates:
-            chat_id = updates[-1].message.chat_id
-            print(f"✅ Найден чат ID: {chat_id}")
-            return chat_id
-        else:
-            print("⚠️ Боту ещё никто не писал. Напиши ему в Telegram!")
-            return None
-    except Exception as e:
-        print(f"❌ Ошибка получения chat_id: {e}")
-        return None
-
-async def send_message_async(chat_id):
-    """Асинхронно отправляет сообщение"""
-    try:
-        bot = Bot(token=BOT_TOKEN)
-        now = datetime.now().strftime("%H:%M:%S")
-        message = f"🦐 Привет Криветка! {now}"
-        
-        await bot.send_message(chat_id=chat_id, text=message)
-        print(f"✅ Отправлено: {message}")
-        return True
-    except Exception as e:
-        print(f"❌ Ошибка отправки: {e}")
-        return False
-
-# 4. Синхронные обёртки
-def get_chat_id():
-    return asyncio.run(get_chat_id_async())
-
-def send_message(chat_id):
-    return asyncio.run(send_message_async(chat_id))
-
-# 5. Основной цикл бота (ЭТО ГЛАВНЫЙ ПОТОК!)
-def bot_main_loop():
-    """Основной цикл отправки сообщений"""
-    print("⏰ Запуск цикла сообщений...")
-    print("📱 Найди бота в Telegram и напиши ему любое сообщение!")
-    
-    chat_id = None
-    attempts = 0
-    
-    while True:
-        if not chat_id:
-            print(f"🔄 Попытка {attempts+1}: ищу chat_id...")
-            chat_id = get_chat_id()
-            attempts += 1
+        if response.status_code == 200:
+            data = response.json()
             
-            if not chat_id:
-                print("⏳ Жду 30 секунд перед следующей попыткой...")
-                time.sleep(30)
-                continue
+            if data.get('result'):
+                # Берём последнее сообщение
+                last_update = data['result'][-1]
+                chat_id = last_update['message']['chat']['id']
+                
+                # Отправляем сообщение
+                now = datetime.now().strftime("%H:%M:%S")
+                message = f"🦐 Привет Криветка! {now}"
+                
+                send_url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+                requests.post(send_url, json={
+                    'chat_id': chat_id,
+                    'text': message
+                })
+                
+                print(f"✅ Отправлено: {message}")
             else:
-                print("🎉 Chat_id найден! Начинаю отправку...")
-                # Отправляем первое сообщение сразу
-                send_message(chat_id)
-        
-        # Отправляем регулярные сообщения
-        try:
-            send_message(chat_id)
-        except Exception as e:
-            print(f"❌ Ошибка: {e}. Сбрасываю chat_id...")
-            chat_id = None
-            continue
-        
-        # Ждём 60 секунд до следующей отправки
-        print(f"⏳ Следующее сообщение через 60 секунд...")
-        time.sleep(60)
-
-# 6. Главная функция - ЗАПУСКАЕМ ВСЁ ПРАВИЛЬНО
-if __name__ == "__main__":
-    # ЗАПУСКАЕМ Flask В ОТДЕЛЬНОМ ПОТОКЕ СРАЗУ
-    flask_thread = Thread(target=run_flask, daemon=True)
-    flask_thread.start()
-    time.sleep(3)  # Даём Flask время запуститься
-    print("🌐 Flask запущен на порту 10000")
+                print("⚠️ Напиши боту в Telegram!")
+        else:
+            print(f"❌ Ошибка API: {response.status_code}")
+            
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
     
-    # ЗАПУСКАЕМ ОСНОВНОЙ ЦИКЛ БОТА В ГЛАВНОМ ПОТОКЕ
-    # Это важно - главный поток не должен быть занят Flask!
-    try:
-        bot_main_loop()
-    except KeyboardInterrupt:
-        print("\n🛑 Бот остановлен")
+    # Ждём 60 секунд
+    time.sleep(60)
