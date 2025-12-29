@@ -1,57 +1,94 @@
 import os
 import time
+import threading
+from datetime import datetime
 from flask import Flask
 from telegram import Bot
 
-print("=" * 50)
-print("🤖 НАЧИНАЮ ТЕСТОВЫЙ ЗАПУСК...")
-print("=" * 50)
-
-# 1. Проверяем переменные окружения
+# ========== 1. ПОЛУЧАЕМ НАСТРОЙКИ ==========
+# Токен и Chat ID берутся ТОЛЬКО из переменных окружения Render
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
 
+# Проверяем, что настройки есть
 if not BOT_TOKEN:
-    print("❌ BOT_TOKEN не найден в переменных окружения!")
+    print("❌ ОШИБКА: Переменная BOT_TOKEN не найдена!")
+    print("   Добавь её в Render: Environment -> Add Environment Variable")
+    print("   Key: BOT_TOKEN, Value: твой_токен_бота")
     exit(1)
 
 if not CHAT_ID:
-    print("❌ CHAT_ID не найден в переменных окружения!")
+    print("❌ ОШИБКА: Переменная CHAT_ID не найдена!")
+    print("   Добавь её в Render")
+    print("   Key: CHAT_ID, Value: твой_chat_id")
     exit(1)
 
-print(f"✅ BOT_TOKEN: {BOT_TOKEN[:10]}...")
-print(f"✅ CHAT_ID: {CHAT_ID}")
+print("=" * 50)
+print("🤖 БОТ 'ПРИВЕТ КРИВЕТКА'")
+print("=" * 50)
+print(f"✅ Токен получен: {BOT_TOKEN[:10]}...")
+print(f"✅ Чат ID: {CHAT_ID}")
 
-# 2. Запускаем Flask (обязательно для Render)
+# ========== 2. FLASK ДЛЯ RENDER ==========
+# Render требует открытый порт, поэтому нужен Flask
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Бот работает! ✅"
+    return "🤖 Бот работает! <a href='/health'>/health</a>"
 
 @app.route('/health')
 def health():
     return "OK", 200
 
-# Запускаем Flask в фоне
-from threading import Thread
 def run_flask():
+    """Запускаем Flask сервер на порту 10000"""
     app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
 
-Thread(target=run_flask, daemon=True).start()
-time.sleep(2)
-print("🌐 Flask запущен на порту 10000")
+# Запускаем Flask в фоновом потоке
+flask_thread = threading.Thread(target=run_flask, daemon=True)
+flask_thread.start()
+time.sleep(2)  # Даём время Flask запуститься
+print("🌐 Flask сервер запущен на порту 10000")
 
-# 3. Тестируем отправку сообщения
-try:
-    bot = Bot(token=BOT_TOKEN)
-    bot.send_message(chat_id=CHAT_ID, text="✅ Бот запущен на Render!")
-    print("✅ Тестовое сообщение отправлено в Telegram")
-except Exception as e:
-    print(f"❌ Ошибка Telegram: {e}")
+# ========== 3. ОСНОВНАЯ ЛОГИКА БОТА ==========
+def send_message():
+    """Отправляет 'Привет Криветка' в Telegram"""
+    try:
+        bot = Bot(token=BOT_TOKEN)
+        current_time = datetime.now().strftime("%H:%M:%S")
+        message = f"🦐 Привет Криветка!\nВремя: {current_time}"
+        
+        bot.send_message(chat_id=CHAT_ID, text=message)
+        print(f"✅ Отправлено в {current_time}")
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
 
-print("=" * 50)
-print("📊 ТЕСТ ЗАВЕРШЁН УСПЕШНО")
-print("=" * 50)
+def message_loop():
+    """Бесконечный цикл отправки каждую минуту"""
+    print("⏰ Запуск цикла сообщений...")
+    
+    # Отправляем первое сообщение сразу
+    send_message()
+    
+    # Затем каждые 60 секунд
+    while True:
+        time.sleep(60)
+        send_message()
 
-# Просто завершаем программу - это для теста
+# ========== 4. ЗАПУСК ВСЕГО ==========
+if __name__ == "__main__":
+    # Запускаем отправку сообщений в отдельном потоке
+    bot_thread = threading.Thread(target=message_loop, daemon=True)
+    bot_thread.start()
+    
+    print("✅ Бот запущен. Сообщения каждую минуту.")
+    print("⚙️ Чтобы остановить: Ctrl+C в логах Render")
+    
+    # Держим основной поток активным
+    try:
+        while True:
+            time.sleep(10)
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен")
