@@ -1,6 +1,6 @@
 import os
 import time
-import threading
+from threading import Thread  # ← ДОБАВЬ ЭТУ СТРОКУ!
 from datetime import datetime
 from flask import Flask
 from telegram import Bot
