@@ -8,19 +8,13 @@ from telegram import Bot
 # ========== 1. ПОЛУЧАЕМ НАСТРОЙКИ ==========
 # Токен и Chat ID берутся ТОЛЬКО из переменных окружения Render
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHAT_ID = os.environ.get('CHAT_ID')
+
 
 # Проверяем, что настройки есть
 if not BOT_TOKEN:
     print("❌ ОШИБКА: Переменная BOT_TOKEN не найдена!")
     print("   Добавь её в Render: Environment -> Add Environment Variable")
     print("   Key: BOT_TOKEN, Value: твой_токен_бота")
-    exit(1)
-
-if not CHAT_ID:
-    print("❌ ОШИБКА: Переменная CHAT_ID не найдена!")
-    print("   Добавь её в Render")
-    print("   Key: CHAT_ID, Value: твой_chat_id")
     exit(1)
 
 print("=" * 50)
@@ -92,3 +86,4 @@ if __name__ == "__main__":
             time.sleep(10)
     except KeyboardInterrupt:
         print("\n🛑 Бот остановлен")
+
