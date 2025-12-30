@@ -1,7 +1,7 @@
 import os
 import time
 from datetime import datetime
-import requests
+
 from flask import Flask
 from threading import Thread
 
@@ -81,3 +81,4 @@ while True:
         chat_id = None
     
     time.sleep(60)
+
