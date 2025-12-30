@@ -1,18 +1,14 @@
-# mindfulness_bot_v5.py
+# mindfulness_bot_v5_fixed.py
 # Python 3.11 | python-telegram-bot v20+
 
 import os
 import json
 import time
 import threading
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Dict, Any
 
-from telegram import (
-    Update,
-    ReplyKeyboardMarkup,
-    KeyboardButton,
-)
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -29,10 +25,10 @@ if not BOT_TOKEN:
 
 START_HOUR = 9
 END_HOUR = 21
-POLL_INTERVAL = 7200  # 2 часа
+POLL_INTERVAL = timedelta(hours=2)
 DATA_FILE = "user_data.json"
 
-# ================== ГЛОБАЛЬНЫЕ ДАННЫЕ ==================
+# ================== ДАННЫЕ ==================
 
 active_users: set[int] = set()
 user_states: Dict[int, Dict[str, Any]] = {}
@@ -40,6 +36,7 @@ user_data: Dict[str, Any] = {}
 
 bot_app: Application | None = None
 stop_timer = False
+last_poll_time: datetime | None = None
 
 # ================== КЛАВИАТУРЫ ==================
 
@@ -47,22 +44,18 @@ state_keyboard = ReplyKeyboardMarkup(
     [
         [KeyboardButton("👁️ Был внимателен и присутствовал")],
         [KeyboardButton("🤖 Спал и действовал на автомате")],
-        [KeyboardButton("➡️ Пропустить комментарий")],
     ],
     resize_keyboard=True,
-    one_time_keyboard=True,
 )
 
 goal_keyboard = ReplyKeyboardMarkup(
     [
         [KeyboardButton("✅ Да"), KeyboardButton("❌ Нет")],
-        [KeyboardButton("➡️ Пропустить комментарий")],
     ],
     resize_keyboard=True,
-    one_time_keyboard=True,
 )
 
-# ================== ХРАНЕНИЕ ДАННЫХ ==================
+# ================== ХРАНЕНИЕ ==================
 
 def load_user_data():
     global user_data
@@ -80,12 +73,9 @@ def add_record(user_id: int, record: dict):
     uid = str(user_id)
     today = date.today().isoformat()
 
-    user_data.setdefault(uid, {
-        "first_name": "",
-        "records": {}
-    })
-
+    user_data.setdefault(uid, {"records": {}})
     user_data[uid]["records"].setdefault(today, [])
+
     record["timestamp"] = datetime.now().isoformat()
     user_data[uid]["records"][today].append(record)
     save_user_data()
@@ -96,171 +86,94 @@ def is_active_time() -> bool:
     h = datetime.now().hour
     return START_HOUR <= h < END_HOUR
 
-def next_poll_time() -> datetime:
-    now = datetime.now()
-    if not is_active_time():
-        return now.replace(
-            hour=START_HOUR, minute=0, second=0, microsecond=0
-        ) + (now.hour >= END_HOUR) * timedelta(days=1)
-
-    seconds = ((now.hour - START_HOUR) * 3600 +
-               now.minute * 60 + now.second)
-    next_sec = ((seconds // POLL_INTERVAL) + 1) * POLL_INTERVAL
-
-    hour = START_HOUR + next_sec // 3600
-    minute = (next_sec % 3600) // 60
-
-    if hour >= END_HOUR:
-        return now.replace(hour=START_HOUR, minute=0, second=0, microsecond=0) + timedelta(days=1)
-
-    return now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-# ================== ОТПРАВКА ОПРОСА ==================
+# ================== ОПРОС ==================
 
 def send_poll(user_id: int):
     if not bot_app:
         return
-
-    username = user_data.get(str(user_id), {}).get("first_name", "друг")
-
-    text = (
-        f"🕰 *Время самопроверки, {username}!*\n\n"
-        f"*1. В каком состоянии внимание?*"
-    )
 
     user_states[user_id] = {"step": 1, "data": {}}
 
     async def _send():
         await bot_app.bot.send_message(
             chat_id=user_id,
-            text=text,
+            text="🕰 *Самопроверка*\n\nВ каком состоянии внимание?",
             parse_mode="Markdown",
             reply_markup=state_keyboard
         )
 
-    bot_app.create_task(_send())
+    bot_app.bot.loop.create_task(_send())
 
 # ================== ТАЙМЕР ==================
 
 def poll_timer():
-    global stop_timer
-    last_minute = None
+    global last_poll_time
 
     while not stop_timer:
         now = datetime.now()
 
         if is_active_time():
-            if now.minute % (POLL_INTERVAL // 60) == 0:
-                if last_minute != now.minute:
-                    for uid in list(active_users):
-                        send_poll(uid)
-                    last_minute = now.minute
-        else:
-            last_minute = None
+            if not last_poll_time or now - last_poll_time >= POLL_INTERVAL:
+                for uid in list(active_users):
+                    send_poll(uid)
+                last_poll_time = now
 
         time.sleep(30)
 
 # ================== HANDLERS ==================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global bot_app
-
-    user = update.effective_user
-    uid = user.id
-
-    bot_app = context.application
+    uid = update.effective_user.id
     active_users.add(uid)
 
-    user_data.setdefault(str(uid), {
-        "first_name": user.first_name or "",
-        "records": {}
-    })
+    user_data.setdefault(str(uid), {"records": {}})
     save_user_data()
 
     await update.message.reply_text(
-        f"👋 Привет, {user.first_name}!\n\n"
-        f"✅ Ты подписан на опросы осознанности\n"
-        f"⏰ Время: {START_HOUR}:00–{END_HOUR}:00\n"
-        f"🔁 Интервал: {POLL_INTERVAL//3600} часа\n\n"
-        f"Команды:\n"
-        f"/stats — статистика\n"
-        f"/stop — отписаться",
-        parse_mode="Markdown"
+        "👋 Ты подписан на опросы осознанности\n"
+        "⏰ 09:00–21:00 | каждые 2 часа\n\n"
+        "/stats — статистика\n"
+        "/stop — отписаться"
     )
 
 async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     active_users.discard(update.effective_user.id)
-    await update.message.reply_text("🛑 Ты отписался от опросов")
+    await update.message.reply_text("🛑 Опросы остановлены")
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     today = date.today().isoformat()
 
-    records = user_data.get(uid, {}).get("records", {}).get(today)
-    if not records:
-        await update.message.reply_text("📊 Сегодня записей нет")
-        return
-
-    total = len(records)
-    present = sum(1 for r in records if r["state"].startswith("👁️"))
-    minutes = sum(r.get("minutes", 0) for r in records)
-
-    await update.message.reply_text(
-        f"📊 *Статистика за сегодня*\n\n"
-        f"• Опросов: {total}\n"
-        f"• Присутствие: {present}\n"
-        f"• Минут на цель: {minutes}",
-        parse_mode="Markdown"
-    )
+    records = user_data.get(uid, {}).get("records", {}).get(today, [])
+    await update.message.reply_text(f"📊 Записей сегодня: {len(records)}")
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
+    text = update.message.text
 
     if uid not in user_states:
         return
 
     step = user_states[uid]["step"]
-    text = update.message.text
 
     if step == 1:
         user_states[uid]["data"]["state"] = text
         user_states[uid]["step"] = 2
-        await update.message.reply_text(
-            "💬 Хочешь добавить комментарий?",
-            reply_markup=ReplyKeyboardMarkup(
-                [[KeyboardButton("➡️ Пропустить комментарий")]],
-                resize_keyboard=True
-            )
-        )
-        return
-
-    if step == 2:
-        user_states[uid]["data"]["state_comment"] = "" if "Пропустить" in text else text
-        user_states[uid]["step"] = 3
-        await update.message.reply_text(
-            "🎯 Помнил ли о цели?",
-            reply_markup=goal_keyboard
-        )
-        return
-
-    if step == 3:
-        user_states[uid]["data"]["remembered_goal"] = text
-        user_states[uid]["step"] = 4
         await update.message.reply_text("⏱ Сколько минут уделил цели?")
         return
 
-    if step == 4:
+    if step == 2:
         try:
             minutes = int(text)
         except ValueError:
-            await update.message.reply_text("Введи число")
+            await update.message.reply_text("Введите число")
             return
 
         user_states[uid]["data"]["minutes"] = minutes
         add_record(uid, user_states[uid]["data"])
         del user_states[uid]
 
-        await update.message.reply_text("✅ Запись сохранена!")
+        await update.message.reply_text("✅ Сохранено")
 
 # ================== MAIN ==================
 
@@ -277,8 +190,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-    timer = threading.Thread(target=poll_timer, daemon=True)
-    timer.start()
+    threading.Thread(target=poll_timer, daemon=True).start()
 
     print("🤖 Бот запущен")
     app.run_polling()
