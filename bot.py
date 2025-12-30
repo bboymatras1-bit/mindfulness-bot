@@ -1,22 +1,29 @@
 import os
 import time
 import json
-import threading
+import logging
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 import requests
 import re
 
-print("=" * 50)
-print("🤖 MINDFULNESS КРИВЕТКА")
-print("=" * 50)
+# Настройка логирования
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+print("=" * 60)
+print("🤖 MINDFULNESS КРИВЕТКА - УСТОЙЧИВАЯ ВЕРСИЯ")
+print("=" * 60)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 if not BOT_TOKEN:
-    print("❌ ОШИБКА: BOT_TOKEN не найден!")
+    logger.error("❌ ОШИБКА: BOT_TOKEN не найден!")
     exit(1)
 
-print(f"✅ Токен: {BOT_TOKEN[:10]}...")
+logger.info(f"✅ Токен: {BOT_TOKEN[:10]}...")
 
 DB_FILE = "mindfulness_responses.json"
 
@@ -57,15 +64,14 @@ def save_response(user_id, username, question, answer, timestamp, question_type=
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        print(f"💾 Ответ: {user_id} -> {answer}")
+        logger.info(f"💾 Ответ: {user_id} -> {answer}")
         return True
         
     except Exception as e:
-        print(f"❌ Ошибка: {e}")
+        logger.error(f"❌ Ошибка сохранения: {e}")
         return False
 
 def get_today_responses(user_id):
-    """Получает все ответы пользователя за сегодня"""
     if not os.path.exists(DB_FILE):
         return []
     
@@ -83,7 +89,7 @@ def get_today_responses(user_id):
         
         return today_responses
     except Exception as e:
-        print(f"❌ Ошибка получения ответов за сегодня: {e}")
+        logger.error(f"❌ Ошибка получения ответов за сегодня: {e}")
         return []
 
 def get_user_stats(user_id, period_days=7):
@@ -139,7 +145,7 @@ def get_user_stats(user_id, period_days=7):
             "period_days": period_days
         }
     except Exception as e:
-        print(f"❌ Ошибка статистики: {e}")
+        logger.error(f"❌ Ошибка статистики: {e}")
         return {"total": 0, "today": 0, "goals_minutes": 0, "daily_summary": []}
 
 MINDFULNESS_QUESTIONS = [
@@ -161,10 +167,31 @@ MINDFULNESS_QUESTIONS = [
 
 app = Flask(__name__)
 
-user_sessions = {}
-question_schedule = {}
-awaiting_time_response = {}
-current_question_index = {}
+# Простая in-memory база (для Render этого достаточно)
+user_states = {}  # {user_id: {"chat_id": ..., "name": ..., "next_question_time": timestamp}}
+
+def send_telegram_message(chat_id, text, reply_markup=None, parse_mode="Markdown"):
+    """Безопасная отправка сообщения в Telegram"""
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": parse_mode
+    }
+    
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
+    
+    try:
+        response = requests.post(url, json=payload, timeout=5)
+        if response.status_code == 200:
+            return True
+        else:
+            logger.error(f"❌ Ошибка отправки: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        logger.error(f"❌ Ошибка сети: {e}")
+        return False
 
 def send_welcome_message(chat_id, user_name):
     message = f"""🦐 *Я — Mindfulness Криветка!*
@@ -187,21 +214,7 @@ def send_welcome_message(chat_id, user_name):
         ]
     }
     
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "Markdown",
-        "reply_markup": keyboard
-    }
-    
-    try:
-        response = requests.post(url, json=payload, timeout=10)
-        print(f"👋 Приветствие {user_name}")
-        return response.status_code == 200
-    except Exception as e:
-        print(f"❌ Ошибка отправки приветствия: {e}")
-        return False
+    return send_telegram_message(chat_id, message, reply_markup=keyboard)
 
 def send_question(chat_id, question_data, user_name="", question_num=1):
     if question_data.get("input_required"):
@@ -211,21 +224,7 @@ def send_question(chat_id, question_data, user_name="", question_num=1):
 
 {question_data['text']}"""
         
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
-        }
-        
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            if user_name:
-                print(f"⏱️ Вопрос {question_num} {user_name}")
-            return True
-        except Exception as e:
-            print(f"❌ Ошибка отправки вопроса о времени: {e}")
-            return False
+        return send_telegram_message(chat_id, message)
     else:
         keyboard = {"inline_keyboard": []}
         
@@ -242,90 +241,12 @@ def send_question(chat_id, question_data, user_name="", question_num=1):
 
 Выбери ответ:"""
         
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown",
-            "reply_markup": keyboard
-        }
-        
-        try:
-            response = requests.post(url, json=payload, timeout=10)
-            if user_name:
-                print(f"🦐 Вопрос {question_num} {user_name}")
-            return response.status_code == 200
-        except Exception as e:
-            print(f"❌ Ошибка отправки вопроса: {e}")
-            return False
-
-def format_stats_message(stats, user_name):
-    """Форматирует статистику"""
-    if stats["total"] == 0:
-        return f"""📊 *Статистика для {user_name}*
-
-Нет ответов. Начни практику! 🚀"""
-    
-    summary_text = ""
-    for day in stats["daily_summary"]:
-        date_obj = datetime.strptime(day["date"], "%Y-%m-%d")
-        date_str = date_obj.strftime("%d.%m")
-        summary_text += f"📅 *{date_str}:* {day['responses']} ответов, {day['goals_minutes']} мин на цели\n"
-    
-    total_hours = stats["goals_minutes"] // 60
-    total_minutes = stats["goals_minutes"] % 60
-    
-    return f"""📊 *Статистика для {user_name}*
-
-*За {stats['period_days']} дней:*
-• Ответов: {stats['total']}
-• Сегодня: {stats['today']}
-• Время на цели: {stats['goals_minutes']} мин ({total_hours} ч {total_minutes} мин)
-
-*Последние 7 дней:*
-{summary_text}"""
-
-def format_today_responses(today_responses):
-    """Форматирует ответы за сегодня"""
-    if not today_responses:
-        return "📝 *Ответы за сегодня:*\n\nПока нет ответов за сегодня."
-    
-    today = datetime.now().strftime("%d.%m.%Y")
-    result = f"📝 *Ответы за сегодня ({today}):*\n\n"
-    
-    for i, response in enumerate(today_responses, 1):
-        time_str = ""
-        if "timestamp" in response:
-            try:
-                dt = datetime.fromisoformat(response["timestamp"].replace('Z', '+00:00'))
-                time_str = dt.strftime("%H:%M")
-            except:
-                time_str = response.get("date", "").split()[1] if " " in response.get("date", "") else ""
-        
-        question = response.get("question", "")
-        answer = response.get("answer", "")
-        
-        if "Ты сейчас сознателен?" in question:
-            q_short = "Сознателен?"
-        elif "Сколько времени я уделил своей цели?" in question:
-            q_short = "Время на цели"
-        else:
-            q_short = question[:20] + "..." if len(question) > 20 else question
-        
-        if answer.isdigit():
-            answer_text = f"{answer} мин"
-        else:
-            answer_text = answer
-        
-        result += f"{i}. *{time_str}* — {q_short}: {answer_text}\n"
-    
-    return result
+        return send_telegram_message(chat_id, message, reply_markup=keyboard)
 
 def is_within_schedule():
     """Проверяет, находится ли текущее время в расписании (11:00-21:00)"""
     now = datetime.now()
     current_hour = now.hour
-    
     return 11 <= current_hour < 22
 
 def get_next_schedule_time():
@@ -356,18 +277,107 @@ def get_next_schedule_time():
 
 @app.route('/')
 def home():
-    return """<h1>🦐 Mindfulness Криветка</h1><p>Бот работает. Напиши /start в Telegram</p>"""
+    """Главная страница для проверки работы"""
+    now = datetime.now()
+    next_time = get_next_schedule_time()
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>🦐 Mindfulness Криветка</title>
+        <meta charset="utf-8">
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                min-height: 100vh;
+            }}
+            .container {{
+                background: rgba(255, 255, 255, 0.1);
+                padding: 30px;
+                border-radius: 15px;
+                backdrop-filter: blur(10px);
+            }}
+            h1 {{
+                text-align: center;
+                font-size: 2.5em;
+                margin-bottom: 30px;
+            }}
+            .status {{
+                background: rgba(255, 255, 255, 0.2);
+                padding: 20px;
+                border-radius: 10px;
+                margin: 20px 0;
+            }}
+            .emoji {{
+                font-size: 1.5em;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1><span class="emoji">🦐</span> Mindfulness Криветка</h1>
+            
+            <div class="status">
+                <h2>✅ Бот работает</h2>
+                <p><strong>Текущее время:</strong> {now.strftime('%H:%M')}</p>
+                <p><strong>В расписании:</strong> {'ДА' if is_within_schedule() else 'НЕТ'}</p>
+                <p><strong>Следующий вопрос:</strong> {next_time.strftime('%H:%M')}</p>
+                <p><strong>Пользователей:</strong> {len(user_states)}</p>
+            </div>
+            
+            <h2>📱 Как использовать:</h2>
+            <ol>
+                <li>Найдите бота в Telegram</li>
+                <li>Напишите <code>/start</code></li>
+                <li>Нажмите кнопку <strong>🚀 НАЧАТЬ</strong></li>
+                <li>Получайте вопросы с 11:00 до 21:00</li>
+                <li>Смотрите статистику: <code>/stats</code></li>
+            </ol>
+            
+            <h2>⏰ Расписание:</h2>
+            <ul>
+                <li>11:00 — первый вопрос дня</li>
+                <li>13:00 — второй вопрос</li>
+                <li>15:00 — третий вопрос</li>
+                <li>17:00 — четвёртый вопрос</li>
+                <li>19:00 — пятый вопрос</li>
+                <li>21:00 — последний вопрос</li>
+            </ul>
+            
+            <p style="text-align: center; margin-top: 40px;">
+                <small>Бот автоматически перезапускается при ошибках</small>
+            </p>
+        </div>
+    </body>
+    </html>
+    """
 
 @app.route('/health')
 def health():
-    return "OK", 200
+    """Health check для Render"""
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "users_count": len(user_states),
+        "within_schedule": is_within_schedule()
+    }), 200
+
+@app.route('/ping')
+def ping():
+    """Простой пинг для поддержания активности"""
+    return "pong", 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    """Основной обработчик вебхуков"""
+    """Упрощённый обработчик вебхуков"""
     try:
         update = request.get_json()
-        print(f"📨 Получен вебхук: {json.dumps(update, ensure_ascii=False)[:200]}...")
         
         # Обработка текстовых сообщений
         if 'message' in update and 'text' in update['message']:
@@ -377,121 +387,131 @@ def webhook():
             user_id = user['id']
             user_name = user.get('first_name', 'друг')
             
-            print(f"📩 Сообщение от {user_name} ({user_id}): {text}")
+            logger.info(f"📩 Сообщение от {user_name}: {text}")
             
-            # Проверяем, не ждёт ли пользователь ответ на вопрос о времени
-            if user_id in awaiting_time_response and awaiting_time_response[user_id]:
-                print(f"⏱️ Пользователь {user_name} отвечает на вопрос о времени")
-                handle_time_input(chat_id, user_id, user_name, text)
-                return jsonify({"status": "ok"}), 200
+            # Сохраняем состояние пользователя
+            if user_id not in user_states:
+                user_states[user_id] = {
+                    "chat_id": chat_id,
+                    "name": user_name,
+                    "waiting_for_time": False,
+                    "last_active": datetime.now().isoformat()
+                }
             
             # Обработка команд
             if text == '/start':
-                print(f"🚀 Команда /start от {user_name}")
                 send_welcome_message(chat_id, user_name)
-                user_sessions[chat_id] = {
-                    "user_id": user_id,
-                    "user_name": user_name,
-                    "waiting_for_start": True
-                }
-                print(f"🦐 Новый пользователь: {user_name}")
                 
             elif text == '/stats':
-                print(f"📊 Команда /stats от {user_name}")
+                # Получаем и отправляем статистику
                 today_responses = get_today_responses(user_id)
+                stats = get_user_stats(user_id, 7)
                 
+                # Форматируем ответы за сегодня
                 if today_responses:
-                    today_message = format_today_responses(today_responses)
-                    response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": today_message,
-                        "parse_mode": "Markdown"
-                    })
-                    print(f"📝 Отправлены ответы за сегодня: статус {response.status_code}")
+                    today = datetime.now().strftime("%d.%m.%Y")
+                    today_text = f"📝 *Ответы за сегодня ({today}):*\n\n"
                     
+                    for i, resp in enumerate(today_responses[:10], 1):  # Ограничим 10 ответами
+                        time_str = ""
+                        if "timestamp" in resp:
+                            try:
+                                dt = datetime.fromisoformat(resp["timestamp"].replace('Z', '+00:00'))
+                                time_str = dt.strftime("%H:%M")
+                            except:
+                                pass
+                        
+                        question = resp.get("question", "")
+                        answer = resp.get("answer", "")
+                        
+                        if "Ты сейчас сознателен?" in question:
+                            q_short = "Сознателен?"
+                        elif "Сколько времени я уделил своей цели?" in question:
+                            q_short = "Время на цели"
+                        else:
+                            q_short = question[:15] + "..."
+                        
+                        if answer.isdigit():
+                            answer_text = f"{answer} мин"
+                        else:
+                            answer_text = answer
+                        
+                        today_text += f"{i}. *{time_str}* — {q_short}: {answer_text}\n"
+                    
+                    send_telegram_message(chat_id, today_text)
                     time.sleep(1)
                 
-                stats = get_user_stats(user_id, 7)
-                stats_message = format_stats_message(stats, user_name)
-                response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                    "chat_id": chat_id,
-                    "text": stats_message,
-                    "parse_mode": "Markdown"
-                })
-                print(f"📊 Отправлена статистика: статус {response.status_code}")
-                
-            elif text.startswith('/stats'):
-                parts = text.split()
-                print(f"📊 Команда {text} от {user_name}")
-                
-                if len(parts) > 1 and parts[1].isdigit():
-                    today_responses = get_today_responses(user_id)
+                # Форматируем статистику
+                if stats["total"] > 0:
+                    summary_text = ""
+                    for day in stats["daily_summary"]:
+                        date_obj = datetime.strptime(day["date"], "%Y-%m-%d")
+                        date_str = date_obj.strftime("%d.%m")
+                        summary_text += f"📅 *{date_str}:* {day['responses']} ответов, {day['goals_minutes']} мин на цели\n"
                     
-                    if today_responses:
-                        today_message = format_today_responses(today_responses)
-                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": today_message,
-                            "parse_mode": "Markdown"
-                        })
-                        
-                        time.sleep(1)
+                    total_hours = stats["goals_minutes"] // 60
+                    total_minutes = stats["goals_minutes"] % 60
                     
-                    period = min(int(parts[1]), 365)
-                    stats = get_user_stats(user_id, period)
-                    stats_message = format_stats_message(stats, user_name)
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": stats_message,
-                        "parse_mode": "Markdown"
-                    })
+                    stats_text = f"""📊 *Статистика для {user_name}*
+
+*За {stats['period_days']} дней:*
+• Ответов: {stats['total']}
+• Сегодня: {stats['today']}
+• Время на цели: {stats['goals_minutes']} мин ({total_hours} ч {total_minutes} мин)
+
+*Последние 7 дней:*
+{summary_text}"""
+                    
+                    send_telegram_message(chat_id, stats_text)
                 else:
-                    today_responses = get_today_responses(user_id)
-                    
-                    if today_responses:
-                        today_message = format_today_responses(today_responses)
-                        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                            "chat_id": chat_id,
-                            "text": today_message,
-                            "parse_mode": "Markdown"
-                        })
-                        
-                        time.sleep(1)
-                    
-                    stats = get_user_stats(user_id, 7)
-                    stats_message = format_stats_message(stats, user_name)
-                    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                        "chat_id": chat_id,
-                        "text": stats_message,
-                        "parse_mode": "Markdown"
-                    })
-                    
+                    send_telegram_message(chat_id, f"📊 *Статистика для {user_name}*\n\nНет ответов. Начни практику! 🚀")
+                
             elif text == '/help':
-                print(f"❓ Команда /help от {user_name}")
-                response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                    "chat_id": chat_id,
-                    "text": """🦐 *Помощь*
+                help_text = """🦐 *Помощь*
 
 *Команды:*
 /start - начать
 /stats - ответы за сегодня + статистика
-/stats N - ответы за сегодня + статистика за N дней
 /help - помощь
 
 *Расписание:*
 Вопросы приходят с 11:00 до 21:00, каждые 2 часа.
-Вне этого времени бот отдыхает.""",
-                    "parse_mode": "Markdown"
-                })
-                print(f"❓ Отправлена помощь: статус {response.status_code}")
-            else:
-                # Неизвестная команда
-                print(f"❓ Неизвестная команда от {user_name}: {text}")
-                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                    "chat_id": chat_id,
-                    "text": "Используй команды: /start, /stats, /help",
-                    "parse_mode": "Markdown"
-                })
+Вне этого времени бот отдыхает."""
+                
+                send_telegram_message(chat_id, help_text)
+            
+            # Если пользователь ждёт ответа на вопрос о времени
+            elif user_states[user_id].get("waiting_for_time", False):
+                text = text.strip()
+                
+                if text.isdigit():
+                    minutes = int(text)
+                    
+                    if 0 <= minutes <= 1440:
+                        save_response(
+                            user_id,
+                            user_name,
+                            "Сколько времени я уделил своей цели?",
+                            f"{minutes}",
+                            datetime.now().isoformat(),
+                            "text"
+                        )
+                        
+                        user_states[user_id]["waiting_for_time"] = False
+                        
+                        # Планируем следующий вопрос
+                        next_time = get_next_schedule_time()
+                        next_time_str = next_time.strftime("%H:%M")
+                        user_states[user_id]["next_question_time"] = time.mktime(next_time.timetuple())
+                        
+                        send_telegram_message(chat_id, 
+                            f"✅ {minutes} минут записано.\nСледующий вопрос в *{next_time_str}*")
+                    else:
+                        send_telegram_message(chat_id, 
+                            f"❌ Введи число от 0 до 1440.\nСколько минут?")
+                else:
+                    send_telegram_message(chat_id, 
+                        "❌ Только цифры.\nСколько минут?")
         
         # Обработка нажатий кнопок
         elif 'callback_query' in update:
@@ -499,271 +519,148 @@ def webhook():
             user = callback['from']
             chat_id = callback['message']['chat']['id']
             callback_data = callback['data']
-            user_name = user.get('first_name', 'друг')
             user_id = user['id']
+            user_name = user.get('first_name', 'друг')
             
-            print(f"🖱️ Кнопка от {user_name} ({user_id}): {callback_data}")
+            logger.info(f"🖱️ Кнопка от {user_name}: {callback_data}")
+            
+            # Ответ на кнопку
+            requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
+                "callback_query_id": callback['id'],
+                "text": "✅",
+                "show_alert": False
+            })
             
             if callback_data == "start_practice":
-                print(f"🚀 Нажата кнопка НАЧАТЬ от {user_name}")
-                send_first_question(chat_id, user_id, user_name)
-                response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
-                    "callback_query_id": callback['id'],
-                    "text": "Начинаем!",
-                    "show_alert": False
-                })
-                print(f"✅ Ответ на кнопку: статус {response.status_code}")
+                # Инициализируем пользователя
+                user_states[user_id] = {
+                    "chat_id": chat_id,
+                    "name": user_name,
+                    "waiting_for_time": False,
+                    "last_active": datetime.now().isoformat()
+                }
+                
+                # Отправляем первый вопрос, если время подходящее
+                if is_within_schedule():
+                    send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name, 1)
+                    
+                    # Планируем следующий вопрос
+                    next_time = get_next_schedule_time()
+                    user_states[user_id]["next_question_time"] = time.mktime(next_time.timetuple())
+                    
+                    logger.info(f"🚀 Начата практика для {user_name}, следующий вопрос в {next_time.strftime('%H:%M')}")
+                else:
+                    next_time = get_next_schedule_time()
+                    next_time_str = next_time.strftime("%H:%M")
+                    send_telegram_message(chat_id, 
+                        f"⏰ Сейчас время отдыха (вопросы с 11:00 до 21:00).\nСледующий вопрос в *{next_time_str}*")
+                    
+                    user_states[user_id]["next_question_time"] = time.mktime(next_time.timetuple())
+            
+            # Обработка ответов на первый вопрос
             else:
-                print(f"🔘 Ответ на вопрос от {user_name}: {callback_data}")
-                handle_first_question_response(callback, chat_id, user_id, user_name)
+                for question in MINDFULNESS_QUESTIONS:
+                    if "options" in question:
+                        for option in question["options"]:
+                            if option["callback"] == callback_data:
+                                save_response(
+                                    user_id,
+                                    user.get('username', user_name),
+                                    question["text"],
+                                    option["text"],
+                                    datetime.now().isoformat(),
+                                    "button"
+                                )
+                                break
+                
+                # Отправляем второй вопрос
+                time.sleep(1)
+                send_question(chat_id, MINDFULNESS_QUESTIONS[1], user_name, 2)
+                user_states[user_id]["waiting_for_time"] = True
         
         return jsonify({"status": "ok"}), 200
         
     except Exception as e:
-        print(f"❌ КРИТИЧЕСКАЯ ОШИБКА в вебхуке: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"❌ Ошибка в вебхуке: {e}")
         return jsonify({"status": "error", "message": str(e)}), 500
 
-def send_first_question(chat_id, user_id, user_name):
-    if chat_id not in user_sessions:
-        user_sessions[chat_id] = {
-            "user_id": user_id,
-            "user_name": user_name
-        }
-    
-    # Проверяем, находится ли сейчас время в расписании
-    if is_within_schedule():
-        print(f"⏰ Время в расписании, отправляю вопрос для {user_name}")
-        send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name, 1)
-        current_question_index[user_id] = 0
+@app.route('/check_schedule', methods=['GET'])
+def check_schedule():
+    """Проверка и отправка запланированных вопросов"""
+    try:
+        current_time = time.time()
+        sent_count = 0
         
-        # Устанавливаем следующее время по расписанию
-        next_time = get_next_schedule_time()
-        question_schedule[chat_id] = time.mktime(next_time.timetuple())
+        for user_id, user_data in list(user_states.items()):
+            next_time = user_data.get("next_question_time", 0)
+            
+            # Если время пришло и пользователь не ждёт ответа
+            if (current_time >= next_time and 
+                not user_data.get("waiting_for_time", False) and
+                is_within_schedule()):
+                
+                send_question(user_data["chat_id"], MINDFULNESS_QUESTIONS[0], user_data["name"], 1)
+                sent_count += 1
+                
+                # Обновляем время следующего вопроса
+                next_schedule_time = get_next_schedule_time()
+                user_data["next_question_time"] = time.mktime(next_schedule_time.timetuple())
+                user_data["last_active"] = datetime.now().isoformat()
         
-        print(f"🚀 Первый вопрос отправлен {user_name}")
-        print(f"⏰ Следующий вопрос в {next_time.strftime('%H:%M')}")
-    else:
-        # Вне расписания - сообщаем когда будет следующий вопрос
-        next_time = get_next_schedule_time()
-        next_time_str = next_time.strftime("%H:%M")
+        return jsonify({
+            "status": "ok",
+            "sent": sent_count,
+            "total_users": len(user_states),
+            "time": datetime.now().strftime("%H:%M:%S")
+        }), 200
         
-        print(f"⏰ Вне расписания для {user_name}, следующий вопрос в {next_time_str}")
-        
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": f"⏰ Сейчас время отдыха (вопросы с 11:00 до 21:00).\nСледующий вопрос в *{next_time_str}*",
-            "parse_mode": "Markdown"
-        })
-        
-        # Устанавливаем расписание на следующее время
-        question_schedule[chat_id] = time.mktime(next_time.timetuple())
-
-def handle_first_question_response(callback, chat_id, user_id, user_name):
-    callback_data = callback['data']
-    
-    for question in MINDFULNESS_QUESTIONS:
-        if "options" in question:
-            for option in question["options"]:
-                if option["callback"] == callback_data:
-                    save_response(
-                        user_id,
-                        callback['from'].get('username', user_name),
-                        question["text"],
-                        option["text"],
-                        datetime.now().isoformat(),
-                        "button"
-                    )
-                    break
-    
-    response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
-        "callback_query_id": callback['id'],
-        "text": "✅ Записано",
-        "show_alert": False
-    })
-    print(f"✅ Ответ на кнопку записан: статус {response.status_code}")
-    
-    time.sleep(1)
-    send_question(chat_id, MINDFULNESS_QUESTIONS[1], user_name, 2)
-    awaiting_time_response[user_id] = True
-    current_question_index[user_id] = 1
-    
-    print(f"🦐 Второй вопрос отправлен {user_name}")
-
-def handle_time_input(chat_id, user_id, user_name, text):
-    text = text.strip()
-    print(f"⏱️ Обработка ответа о времени от {user_name}: {text}")
-    
-    if text.isdigit():
-        minutes = int(text)
-        
-        if 0 <= minutes <= 1440:
-            save_response(
-                user_id,
-                user_name,
-                "Сколько времени я уделил своей цели?",
-                f"{minutes}",
-                datetime.now().isoformat(),
-                "text"
-            )
-            
-            awaiting_time_response[user_id] = False
-            if user_id in current_question_index:
-                del current_question_index[user_id]
-            
-            # Сообщаем о следующем вопросе по расписанию
-            next_time = get_next_schedule_time()
-            next_time_str = next_time.strftime("%H:%M")
-            
-            response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": f"✅ {minutes} минут записано.\nСледующий вопрос в *{next_time_str}*",
-                "parse_mode": "Markdown"
-            })
-            print(f"✅ Ответ о времени сохранен: {minutes} мин, статус {response.status_code}")
-        else:
-            response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                "chat_id": chat_id,
-                "text": f"❌ Введи число от 0 до 1440.\nСколько минут?",
-                "parse_mode": "Markdown"
-            })
-            print(f"❌ Неверный диапазон: {minutes} мин")
-    else:
-        response = requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-            "chat_id": chat_id,
-            "text": "❌ Только цифры.\nСколько минут?",
-            "parse_mode": "Markdown"
-        })
-        print(f"❌ Не цифры: {text}")
-
-def send_scheduled_questions():
-    """Отправляет вопросы по расписанию"""
-    print("⏰ Планировщик вопросов запущен")
-    
-    while True:
-        try:
-            current_time = time.time()
-            
-            for chat_id, next_time in list(question_schedule.items()):
-                if current_time >= next_time and chat_id in user_sessions:
-                    session = user_sessions[chat_id]
-                    user_id = session["user_id"]
-                    
-                    # Проверяем, не отвечает ли пользователь сейчас
-                    if user_id in awaiting_time_response and awaiting_time_response[user_id]:
-                        continue
-                    
-                    # Проверяем, находится ли сейчас время в расписании
-                    if is_within_schedule():
-                        print(f"🕐 Отправка вопроса по расписанию для {session['user_name']}")
-                        send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"], 1)
-                        current_question_index[user_id] = 0
-                        
-                        # Устанавливаем следующее время по расписанию
-                        next_schedule_time = get_next_schedule_time()
-                        question_schedule[chat_id] = time.mktime(next_schedule_time.timetuple())
-                        
-                        print(f"✅ Вопрос отправлен {session['user_name']} в {datetime.now().strftime('%H:%M')}")
-                        print(f"⏰ Следующий вопрос в {next_schedule_time.strftime('%H:%M')}")
-                    else:
-                        # Вне расписания - переносим на следующее рабочее время
-                        next_schedule_time = get_next_schedule_time()
-                        question_schedule[chat_id] = time.mktime(next_schedule_time.timetuple())
-                        print(f"⏰ Время отдыха для {session['user_name']}. Следующий вопрос в {next_schedule_time.strftime('%H:%M')}")
-            
-            # Логируем статус
-            if int(time.time()) % 60 == 0:  # Каждую минуту
-                active_users = len(user_sessions)
-                now = datetime.now()
-                print(f"📊 Статус: {active_users} пользователей, время: {now.strftime('%H:%M')}, в расписании: {is_within_schedule()}")
-            
-            time.sleep(10)
-            
-        except Exception as e:
-            print(f"❌ Ошибка планировщика: {e}")
-            time.sleep(30)
+    except Exception as e:
+        logger.error(f"❌ Ошибка проверки расписания: {e}")
+        return jsonify({"status": "error"}), 500
 
 def setup_webhook():
-    """Настраивает вебхук с очисткой очереди"""
+    """Настройка вебхука при запуске"""
     try:
-        print("🔄 Настройка вебхука...")
+        # Удаляем старый вебхук
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook", timeout=5)
         
-        # 1. Сначала очищаем очередь обновлений
-        print("🧹 Очищаю очередь обновлений...")
-        delete_url = f"https://api.telegram.org/bot{BOT_TOKEN}/deleteWebhook"
-        response = requests.post(delete_url, timeout=10)
-        print(f"🗑️ Вебхук удалён: {response.json()}")
-        
-        # 2. Получаем и сбрасываем все старые обновления
-        print("🧹 Сбрасываю старые обновления...")
-        get_updates_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        params = {"offset": -1, "timeout": 1}
-        response = requests.get(get_updates_url, params=params, timeout=5)
-        print(f"🧹 Очередь очищена: {len(response.json().get('result', []))} обновлений удалено")
-        
-        # 3. Устанавливаем новый вебхук
+        # Устанавливаем новый
         webhook_url = f"https://mindfulness-bot-1.onrender.com/webhook"
-        set_url = f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook"
+        response = requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook",
+            json={"url": webhook_url},
+            timeout=10
+        )
         
-        webhook_payload = {
-            "url": webhook_url,
-            "max_connections": 40,
-            "allowed_updates": ["message", "callback_query"]
-        }
-        
-        response = requests.post(set_url, json=webhook_payload, timeout=10)
-        result = response.json()
-        print(f"🌐 Вебхук установлен: {result}")
-        
-        # 4. Проверяем вебхук
-        get_webhook_url = f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo"
-        response = requests.get(get_webhook_url, timeout=5)
-        print(f"🔍 Информация о вебхуке: {response.json()}")
+        logger.info(f"🌐 Вебхук установлен: {response.json()}")
         
     except Exception as e:
-        print(f"⚠️ Ошибка настройки вебхука: {e}")
-        import traceback
-        traceback.print_exc()
-
-def cleanup_old_updates():
-    """Дополнительная очистка старых обновлений"""
-    try:
-        print("🧹 Дополнительная очистка очереди...")
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/getUpdates"
-        params = {"offset": -1, "timeout": 1}
-        response = requests.get(url, params=params, timeout=5)
-        updates = response.json().get('result', [])
-        print(f"🧹 Удалено {len(updates)} старых обновлений")
-    except Exception as e:
-        print(f"⚠️ Ошибка очистки очереди: {e}")
+        logger.error(f"⚠️ Ошибка вебхука: {e}")
 
 if __name__ == "__main__":
-    # Очищаем старые обновления перед запуском
-    cleanup_old_updates()
-    
     # Настраиваем вебхук
     setup_webhook()
     
-    # Запускаем планировщик вопросов
-    scheduler_thread = threading.Thread(target=send_scheduled_questions, daemon=True)
-    scheduler_thread.start()
-    
-    print("\n" + "=" * 50)
-    print("🚀 Mindfulness Криветка ЗАПУЩЕНА!")
-    print("=" * 50)
-    print(f"🔗 Веб-интерфейс: https://mindfulness-bot-1.onrender.com")
-    print("🤖 Напиши /start в Telegram")
-    print("⏰ Расписание: вопросы с 11:00 до 21:00, каждые 2 часа")
-    print("📊 /stats - ответы за сегодня + статистика")
-    
-    # Показываем ближайшее время отправки
-    next_time = get_next_schedule_time()
     now = datetime.now()
-    print(f"⏰ Сейчас: {now.strftime('%H:%M')}")
-    print(f"⏰ Ближайшая отправка вопросов в {next_time.strftime('%H:%M')}")
-    print(f"⏰ В расписании сейчас: {'ДА' if is_within_schedule() else 'НЕТ'}")
-    print("=" * 50 + "\n")
+    next_time = get_next_schedule_time()
+    
+    print("\n" + "=" * 60)
+    print("🚀 MINDFULNESS КРИВЕТКА ЗАПУЩЕНА")
+    print("=" * 60)
+    print(f"⏰ Текущее время: {now.strftime('%H:%M:%S')}")
+    print(f"📅 Расписание: {'АКТИВНО' if is_within_schedule() else 'НЕАКТИВНО'}")
+    print(f"⏰ Следующий вопрос: {next_time.strftime('%H:%M')}")
+    print(f"🔗 Веб-интерфейс: https://mindfulness-bot-1.onrender.com")
+    print(f"🔗 Вебхук: https://mindfulness-bot-1.onrender.com/webhook")
+    print(f"❤️  Health check: https://mindfulness-bot-1.onrender.com/health")
+    print(f"🔄 Schedule check: https://mindfulness-bot-1.onrender.com/check_schedule")
+    print("=" * 60 + "\n")
     
     # Запускаем Flask
-    app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
+    app.run(
+        host='0.0.0.0',
+        port=10000,
+        debug=False,
+        use_reloader=False,
+        threaded=True
+    )
