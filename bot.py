@@ -57,11 +57,11 @@ def save_response(user_id, username, question, answer, timestamp, question_type=
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
-        print(f"💾 Ответ сохранён: {user_id} -> {answer}")
+        print(f"💾 Ответ: {user_id} -> {answer}")
         return True
         
     except Exception as e:
-        print(f"❌ Ошибка сохранения: {e}")
+        print(f"❌ Ошибка: {e}")
         return False
 
 def get_user_stats(user_id, period_days=7):
@@ -126,6 +126,7 @@ def get_user_stats(user_id, period_days=7):
         print(f"❌ Ошибка статистики: {e}")
         return {"total": 0, "today": 0, "conscious": 0, "goals_minutes": 0, "daily_summary": []}
 
+# ТОЛЬКО 2 ВОПРОСА
 MINDFULNESS_QUESTIONS = [
     {
         "id": "conscious",
@@ -140,47 +141,6 @@ MINDFULNESS_QUESTIONS = [
         "id": "time_for_goal",
         "text": "⏱️ *Сколько времени я уделил своей цели?*\n_Введи число минут (только цифры):_",
         "input_required": True
-    },
-    {
-        "id": "attention",
-        "text": "👁️ *На чём сейчас твоё внимание?*",
-        "options": [
-            {"text": "🎯 На текущей задаче", "callback": "attention_task"},
-            {"text": "🌌 На внутренних мыслях", "callback": "attention_thoughts"},
-            {"text": "🌍 На внешней среде", "callback": "attention_external"},
-            {"text": "🌀 Рассеяно, ни на чём конкретно", "callback": "attention_scattered"}
-        ]
-    },
-    {
-        "id": "energy",
-        "text": "⚡ *Какой у тебя уровень энергии?*",
-        "options": [
-            {"text": "🔋 Высокий, полон сил", "callback": "energy_high"},
-            {"text": "🔄 Средний, стабильный", "callback": "energy_medium"},
-            {"text": "🪫 Низкий, устал", "callback": "energy_low"},
-            {"text": "🌊 Волнообразный, то вверх то вниз", "callback": "energy_wave"}
-        ]
-    },
-    {
-        "id": "emotion",
-        "text": "💖 *Какая сейчас основная эмоция?*",
-        "options": [
-            {"text": "😊 Спокойствие/радость", "callback": "emotion_calm"},
-            {"text": "😐 Нейтральное состояние", "callback": "emotion_neutral"},
-            {"text": "😟 Тревога/беспокойство", "callback": "emotion_anxious"},
-            {"text": "😤 Раздражение/фрустрация", "callback": "emotion_irritated"},
-            {"text": "🤷 Не осознаю эмоции", "callback": "emotion_unaware"}
-        ]
-    },
-    {
-        "id": "purpose",
-        "text": "🎯 *Помнишь ли о своей главной цели сегодня?*",
-        "options": [
-            {"text": "✅ Да, чётко представляю", "callback": "purpose_clear"},
-            {"text": "🌀 Смутно помню", "callback": "purpose_vague"},
-            {"text": "❌ Полностью забыл", "callback": "purpose_forgotten"},
-            {"text": "🤔 У меня нет чёткой цели", "callback": "purpose_none"}
-        ]
     }
 ]
 
@@ -195,11 +155,13 @@ def send_welcome_message(chat_id, user_name):
 
 Привет, {user_name}! Я буду помогать тебе оставаться осознанным.
 
-Каждые *2 часа* я задаю вопросы о твоём состоянии.
+Каждые *2 часа* я задаю 2 вопроса:
+1. Ты сейчас сознателен?
+2. Сколько времени уделил цели?
 
 📊 *Все ответы сохраняются* — смотри статистику /stats
 
-Нажми *СТАРТ* для первого вопроса!"""
+Нажми *СТАРТ* для начала!"""
     
     keyboard = {
         "inline_keyboard": [
@@ -222,11 +184,11 @@ def send_welcome_message(chat_id, user_name):
     except:
         return False
 
-def send_mindfulness_question(chat_id, question_data, user_name=""):
+def send_question(chat_id, question_data, user_name=""):
     if question_data.get("input_required"):
         message = f"""🦐 *Mindfulness Криветка*
 
-*Вопрос:*
+*Вопрос 2:*
 
 {question_data['text']}"""
         
@@ -254,7 +216,7 @@ def send_mindfulness_question(chat_id, question_data, user_name=""):
         
         message = f"""🦐 *Mindfulness Криветка*
 
-*Вопрос:*
+*Вопрос 1:*
 
 {question_data['text']}
 
@@ -386,7 +348,7 @@ def webhook():
             print(f"🖱️ {user_name}: {callback_data}")
             
             if callback_data == "start_practice":
-                start_practice(chat_id, user_id, user_name)
+                send_two_questions(chat_id, user_id, user_name)
                 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
                     "callback_query_id": callback['id'],
                     "text": "Начинаем!",
@@ -425,6 +387,31 @@ def webhook():
         print(f"❌ Ошибка: {e}")
         return jsonify({"status": "error"}), 500
 
+def send_two_questions(chat_id, user_id, user_name):
+    """Отправляет сразу 2 вопроса"""
+    if chat_id not in user_sessions:
+        user_sessions[chat_id] = {
+            "user_id": user_id,
+            "user_name": user_name,
+            "question_index": 0
+        }
+    
+    # Отправляем первый вопрос (с кнопками)
+    time.sleep(1)  # Пауза между сообщениями
+    send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name)
+    
+    # Отправляем второй вопрос (о времени)
+    time.sleep(1)  # Пауза между сообщениями
+    send_question(chat_id, MINDFULNESS_QUESTIONS[1], user_name)
+    
+    # Отмечаем, что ждём ответ на вопрос о времени
+    awaiting_time_response[user_id] = True
+    
+    # Планируем следующие 2 вопроса через 2 часа
+    question_schedule[chat_id] = time.time() + 7200
+    
+    print(f"🚀 2 вопроса отправлены {user_name}")
+
 def handle_time_input(chat_id, user_id, user_name, text):
     text = text.strip()
     
@@ -445,7 +432,7 @@ def handle_time_input(chat_id, user_id, user_name, text):
             
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": f"✅ {minutes} минут записано. Следующий вопрос через 2 часа.",
+                "text": f"✅ {minutes} минут записано. Следующие 2 вопроса через 2 часа.",
                 "parse_mode": "Markdown"
             })
         else:
@@ -461,30 +448,8 @@ def handle_time_input(chat_id, user_id, user_name, text):
             "parse_mode": "Markdown"
         })
 
-def start_practice(chat_id, user_id, user_name):
-    if chat_id not in user_sessions:
-        user_sessions[chat_id] = {
-            "user_id": user_id,
-            "user_name": user_name,
-            "question_index": 0
-        }
-    
-    if "waiting_for_start" in user_sessions[chat_id]:
-        user_sessions[chat_id]["waiting_for_start"] = False
-    
-    question_index = user_sessions[chat_id]["question_index"]
-    question = MINDFULNESS_QUESTIONS[question_index % len(MINDFULNESS_QUESTIONS)]
-    
-    if send_mindfulness_question(chat_id, question, user_name):
-        print(f"🚀 Вопрос {user_name}")
-        
-        if question.get("input_required"):
-            awaiting_time_response[user_id] = True
-        
-        question_schedule[chat_id] = time.time() + 7200
-        user_sessions[chat_id]["question_index"] = question_index + 1
-
 def send_scheduled_questions():
+    """Отправляет 2 вопроса каждые 2 часа"""
     while True:
         try:
             current_time = time.time()
@@ -493,20 +458,21 @@ def send_scheduled_questions():
                 if current_time >= next_time and chat_id in user_sessions:
                     session = user_sessions[chat_id]
                     
-                    if session.get("waiting_for_start", False):
-                        continue
+                    # Отправляем первый вопрос
+                    time.sleep(1)
+                    send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"])
                     
-                    question_index = session["question_index"]
-                    question = MINDFULNESS_QUESTIONS[question_index % len(MINDFULNESS_QUESTIONS)]
+                    # Отправляем второй вопрос
+                    time.sleep(1)
+                    send_question(chat_id, MINDFULNESS_QUESTIONS[1], session["user_name"])
                     
-                    if send_mindfulness_question(chat_id, question, session["user_name"]):
-                        print(f"🦐 Вопрос по расписанию {session['user_name']}")
-                        
-                        if question.get("input_required"):
-                            awaiting_time_response[session["user_id"]] = True
-                        
-                        question_schedule[chat_id] = current_time + 7200
-                        user_sessions[chat_id]["question_index"] = question_index + 1
+                    # Отмечаем, что ждём ответ на вопрос о времени
+                    awaiting_time_response[session["user_id"]] = True
+                    
+                    # Планируем следующие 2 вопроса через 2 часа
+                    question_schedule[chat_id] = current_time + 7200
+                    
+                    print(f"🦐 2 вопроса по расписанию {session['user_name']}")
             
             time.sleep(10)
             
@@ -538,5 +504,6 @@ if __name__ == "__main__":
     print("🚀 Запуск...")
     print(f"🔗 https://mindfulness-bot-1.onrender.com")
     print("🤖 Напиши /start в Telegram")
+    print("🕐 Режим: 2 вопроса сразу, повтор через 2 часа")
     
     app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
