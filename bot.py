@@ -79,7 +79,6 @@ def get_today_responses(user_id):
             if r.get("user_id") == user_id and r.get("date", "").startswith(today)
         ]
         
-        # Сортируем по времени (от новых к старым)
         today_responses.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
         
         return today_responses
@@ -89,7 +88,7 @@ def get_today_responses(user_id):
 
 def get_user_stats(user_id, period_days=7):
     if not os.path.exists(DB_FILE):
-        return {"total": 0, "today": 0, "conscious": 0, "goals_minutes": 0, "daily_summary": []}
+        return {"total": 0, "today": 0, "goals_minutes": 0, "daily_summary": []}
     
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -104,8 +103,6 @@ def get_user_stats(user_id, period_days=7):
         today = datetime.now().strftime("%Y-%m-%d")
         today_responses = [r for r in user_responses if r.get("date", "").startswith(today)]
         
-        conscious = sum(1 for r in user_responses if "сознателен" in r.get("answer", ""))
-        
         goals_minutes = 0
         for r in user_responses:
             if "Сколько времени я уделил своей цели?" in r.get("question", ""):
@@ -119,7 +116,6 @@ def get_user_stats(user_id, period_days=7):
         
         for date in dates[-7:]:
             date_responses = [r for r in user_responses if r.get("date", "").startswith(date)]
-            conscious_count = sum(1 for r in date_responses if "сознателен" in r.get("answer", ""))
             
             daily_goals = 0
             for r in date_responses:
@@ -132,22 +128,19 @@ def get_user_stats(user_id, period_days=7):
             daily_summary.append({
                 "date": date,
                 "responses": len(date_responses),
-                "conscious": conscious_count,
                 "goals_minutes": daily_goals
             })
         
         return {
             "total": len(user_responses),
             "today": len(today_responses),
-            "conscious": conscious,
-            "conscious_percent": (conscious / len(user_responses) * 100) if user_responses else 0,
             "goals_minutes": goals_minutes,
             "daily_summary": daily_summary,
             "period_days": period_days
         }
     except Exception as e:
         print(f"❌ Ошибка статистики: {e}")
-        return {"total": 0, "today": 0, "conscious": 0, "goals_minutes": 0, "daily_summary": []}
+        return {"total": 0, "today": 0, "goals_minutes": 0, "daily_summary": []}
 
 MINDFULNESS_QUESTIONS = [
     {
@@ -262,7 +255,7 @@ def send_question(chat_id, question_data, user_name="", question_num=1):
             return False
 
 def format_stats_message(stats, user_name):
-    """Форматирует статистику"""
+    """Форматирует статистику БЕЗ осознанности"""
     if stats["total"] == 0:
         return f"""📊 *Статистика для {user_name}*
 
@@ -272,7 +265,7 @@ def format_stats_message(stats, user_name):
     for day in stats["daily_summary"]:
         date_obj = datetime.strptime(day["date"], "%Y-%m-%d")
         date_str = date_obj.strftime("%d.%m")
-        summary_text += f"📅 *{date_str}:* {day['responses']} ответов, {day['conscious']} осознанных, {day['goals_minutes']} мин на цели\n"
+        summary_text += f"📅 *{date_str}:* {day['responses']} ответов, {day['goals_minutes']} мин на цели\n"
     
     total_hours = stats["goals_minutes"] // 60
     total_minutes = stats["goals_minutes"] % 60
@@ -282,8 +275,6 @@ def format_stats_message(stats, user_name):
 *За {stats['period_days']} дней:*
 • Ответов: {stats['total']}
 • Сегодня: {stats['today']}
-• Осознанных: {stats['conscious']}
-• Осознанность: {stats['conscious_percent']:.1f}%
 • Время на цели: {stats['goals_minutes']} мин ({total_hours} ч {total_minutes} мин)
 
 *Последние 7 дней:*
@@ -309,7 +300,6 @@ def format_today_responses(today_responses):
         question = response.get("question", "")
         answer = response.get("answer", "")
         
-        # Упрощаем вопросы для отображения
         if "Ты сейчас сознателен?" in question:
             q_short = "Сознателен?"
         elif "Сколько времени я уделил своей цели?" in question:
@@ -317,7 +307,6 @@ def format_today_responses(today_responses):
         else:
             q_short = question[:20] + "..." if len(question) > 20 else question
         
-        # Форматируем ответ
         if answer.isdigit():
             answer_text = f"{answer} мин"
         else:
@@ -363,11 +352,9 @@ def webhook():
                 print(f"🦐 Новый {user_name}")
                 
             elif text == '/stats':
-                # Получаем ответы за сегодня
                 today_responses = get_today_responses(user_id)
                 
                 if today_responses:
-                    # Отправляем ответы за сегодня
                     today_message = format_today_responses(today_responses)
                     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                         "chat_id": chat_id,
@@ -375,10 +362,8 @@ def webhook():
                         "parse_mode": "Markdown"
                     })
                     
-                    # Пауза 1 секунда
                     time.sleep(1)
                 
-                # Отправляем общую статистику
                 stats = get_user_stats(user_id, 7)
                 stats_message = format_stats_message(stats, user_name)
                 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
@@ -390,7 +375,6 @@ def webhook():
             elif text.startswith('/stats'):
                 parts = text.split()
                 if len(parts) > 1 and parts[1].isdigit():
-                    # Получаем ответы за сегодня
                     today_responses = get_today_responses(user_id)
                     
                     if today_responses:
@@ -412,7 +396,6 @@ def webhook():
                         "parse_mode": "Markdown"
                     })
                 else:
-                    # Просто /stats без параметра
                     today_responses = get_today_responses(user_id)
                     
                     if today_responses:
