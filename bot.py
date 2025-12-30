@@ -171,13 +171,15 @@ def send_welcome_message(chat_id, user_name):
 
 Привет, {user_name}! Я буду помогать тебе оставаться осознанным.
 
-Каждые *2 часа* я задаю 2 вопроса по очереди:
+Я задаю 2 вопроса по очереди:
 1. Ты сейчас сознателен?
 2. Сколько времени уделил цели?
 
+⏰ *Расписание:* вопросы приходят с 11:00 до 21:00, каждые 2 часа.
+
 📊 *Все ответы сохраняются* — смотри статистику /stats
 
-Нажми *СТАРТ* для начала!"""
+Нажми *СТАРТ* чтобы присоединиться!"""
     
     keyboard = {
         "inline_keyboard": [
@@ -255,7 +257,7 @@ def send_question(chat_id, question_data, user_name="", question_num=1):
             return False
 
 def format_stats_message(stats, user_name):
-    """Форматирует статистику БЕЗ осознанности"""
+    """Форматирует статистику"""
     if stats["total"] == 0:
         return f"""📊 *Статистика для {user_name}*
 
@@ -315,6 +317,45 @@ def format_today_responses(today_responses):
         result += f"{i}. *{time_str}* — {q_short}: {answer_text}\n"
     
     return result
+
+def is_within_schedule():
+    """Проверяет, находится ли текущее время в расписании (11:00-21:00)"""
+    now = datetime.now()
+    current_hour = now.hour
+    
+    # Проверяем время с 11:00 до 21:00 (включительно)
+    return 11 <= current_hour < 22  # 21:59 это ещё входит
+
+def get_next_schedule_time():
+    """Рассчитывает время следующей отправки по расписанию"""
+    now = datetime.now()
+    current_hour = now.hour
+    
+    # Если сейчас до 11:00, ждём до 11:00
+    if current_hour < 11:
+        next_time = now.replace(hour=11, minute=0, second=0, microsecond=0)
+    
+    # Если сейчас после 21:00, ждём до 11:00 следующего дня
+    elif current_hour >= 21:
+        next_day = now + timedelta(days=1)
+        next_time = next_day.replace(hour=11, minute=0, second=0, microsecond=0)
+    
+    # Если сейчас в рабочее время (11:00-20:59)
+    else:
+        # Определяем следующий чётный час от 11 (11, 13, 15, 17, 19, 21)
+        next_hour = current_hour
+        while True:
+            next_hour += 1
+            if next_hour > 21:
+                # Если превысили 21:00, переходим на следующий день 11:00
+                next_day = now + timedelta(days=1)
+                next_time = next_day.replace(hour=11, minute=0, second=0, microsecond=0)
+                break
+            if next_hour % 2 == 1 and 11 <= next_hour <= 21:  # Нечётные часы с 11 до 21
+                next_time = now.replace(hour=next_hour, minute=0, second=0, microsecond=0)
+                break
+    
+    return next_time
 
 @app.route('/')
 def home():
@@ -427,14 +468,14 @@ def webhook():
 /stats N - ответы за сегодня + статистика за N дней
 /help - помощь
 
-*Как работает:*
-1. Нажми НАЧАТЬ
-2. Отвечай на вопросы по очереди
-3. Каждые 2 часа новые вопросы
-4. Все ответы сохраняются
-5. Смотри историю в /stats""",
+*Расписание:*
+Вопросы приходят с 11:00 до 21:00, каждые 2 часа.
+Вне этого времени бот отдыхает.""",
                     "parse_mode": "Markdown"
                 })
+            else:
+                # Если просто текст (не команда)
+                pass
         
         elif 'callback_query' in update:
             callback = update['callback_query']
@@ -469,11 +510,31 @@ def send_first_question(chat_id, user_id, user_name):
             "user_name": user_name
         }
     
-    send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name, 1)
-    current_question_index[user_id] = 0
-    question_schedule[chat_id] = time.time() + 7200
-    
-    print(f"🚀 Первый вопрос отправлен {user_name}")
+    # Проверяем, находится ли сейчас время в расписании
+    if is_within_schedule():
+        send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name, 1)
+        current_question_index[user_id] = 0
+        
+        # Устанавливаем следующее время по расписанию
+        next_time = get_next_schedule_time()
+        question_schedule[chat_id] = time.mktime(next_time.timetuple())
+        
+        print(f"🚀 Первый вопрос отправлен {user_name}")
+        print(f"⏰ Следующий вопрос в {next_time.strftime('%H:%M')}")
+    else:
+        # Вне расписания - сообщаем когда будет следующий вопрос
+        next_time = get_next_schedule_time()
+        next_time_str = next_time.strftime("%H:%M")
+        
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
+            "chat_id": chat_id,
+            "text": f"⏰ Сейчас время отдыха (вопросы с 11:00 до 21:00).\nСледующий вопрос в *{next_time_str}*",
+            "parse_mode": "Markdown"
+        })
+        
+        # Устанавливаем расписание на следующее время
+        question_schedule[chat_id] = time.mktime(next_time.timetuple())
+        print(f"⏰ Пользователь {user_name} зарегистрирован. Следующий вопрос в {next_time_str}")
 
 def handle_first_question_response(callback, chat_id, user_id, user_name):
     callback_data = callback['data']
@@ -525,9 +586,13 @@ def handle_time_input(chat_id, user_id, user_name, text):
             if user_id in current_question_index:
                 del current_question_index[user_id]
             
+            # Сообщаем о следующем вопросе по расписанию
+            next_time = get_next_schedule_time()
+            next_time_str = next_time.strftime("%H:%M")
+            
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": f"✅ {minutes} минут записано. Следующие вопросы через 2 часа.",
+                "text": f"✅ {minutes} минут записано.\nСледующий вопрос в *{next_time_str}*",
                 "parse_mode": "Markdown"
             })
         else:
@@ -544,6 +609,7 @@ def handle_time_input(chat_id, user_id, user_name, text):
         })
 
 def send_scheduled_questions():
+    """Отправляет вопросы по расписанию (с 11:00 до 21:00, каждые 2 часа)"""
     while True:
         try:
             current_time = time.time()
@@ -553,14 +619,32 @@ def send_scheduled_questions():
                     session = user_sessions[chat_id]
                     user_id = session["user_id"]
                     
+                    # Проверяем, не отвечает ли пользователь сейчас
                     if user_id in awaiting_time_response and awaiting_time_response[user_id]:
                         continue
                     
-                    send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"], 1)
-                    current_question_index[user_id] = 0
-                    question_schedule[chat_id] = current_time + 7200
-                    
-                    print(f"🕐 Вопросы по расписанию {session['user_name']}")
+                    # Проверяем, находится ли сейчас время в расписании
+                    if is_within_schedule():
+                        send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"], 1)
+                        current_question_index[user_id] = 0
+                        
+                        # Устанавливаем следующее время по расписанию
+                        next_schedule_time = get_next_schedule_time()
+                        question_schedule[chat_id] = time.mktime(next_schedule_time.timetuple())
+                        
+                        print(f"🕐 Вопрос по расписанию {session['user_name']} в {datetime.now().strftime('%H:%M')}")
+                        print(f"⏰ Следующий вопрос в {next_schedule_time.strftime('%H:%M')}")
+                    else:
+                        # Вне расписания - переносим на следующее рабочее время
+                        next_schedule_time = get_next_schedule_time()
+                        question_schedule[chat_id] = time.mktime(next_schedule_time.timetuple())
+                        print(f"⏰ Время отдыха для {session['user_name']}. Следующий вопрос в {next_schedule_time.strftime('%H:%M')}")
+            
+            # Логируем статус каждые 5 минут
+            if int(time.time()) % 300 == 0:
+                now = datetime.now()
+                print(f"📊 Статус: {len(user_sessions)} пользователей, время: {now.strftime('%H:%M')}")
+                print(f"📅 Расписание активно: {is_within_schedule()} (11:00-21:00)")
             
             time.sleep(10)
             
@@ -589,9 +673,14 @@ if __name__ == "__main__":
     scheduler_thread = threading.Thread(target=send_scheduled_questions, daemon=True)
     scheduler_thread.start()
     
-    print("🚀 Запуск...")
-    print(f"🔗 https://mindfulness-bot-1.onrender.com")
+    print("🚀 Запуск Mindfulness Криветки...")
+    print(f"🔗 Веб-интерфейс: https://mindfulness-bot-1.onrender.com")
     print("🤖 Напиши /start в Telegram")
+    print("⏰ Расписание: вопросы с 11:00 до 21:00, каждые 2 часа")
     print("📊 /stats показывает ответы за сегодня и статистику")
+    
+    # Показываем ближайшее время отправки
+    next_time = get_next_schedule_time()
+    print(f"⏰ Ближайшая отправка вопросов в {next_time.strftime('%H:%M')}")
     
     app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
