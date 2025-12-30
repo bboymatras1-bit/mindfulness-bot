@@ -126,7 +126,6 @@ def get_user_stats(user_id, period_days=7):
         print(f"❌ Ошибка статистики: {e}")
         return {"total": 0, "today": 0, "conscious": 0, "goals_minutes": 0, "daily_summary": []}
 
-# ТОЛЬКО 2 ВОПРОСА
 MINDFULNESS_QUESTIONS = [
     {
         "id": "conscious",
@@ -149,13 +148,14 @@ app = Flask(__name__)
 user_sessions = {}
 question_schedule = {}
 awaiting_time_response = {}
+current_question_index = {}  # {user_id: 0 или 1} - какой вопрос сейчас задан
 
 def send_welcome_message(chat_id, user_name):
     message = f"""🦐 *Я — Mindfulness Криветка!*
 
 Привет, {user_name}! Я буду помогать тебе оставаться осознанным.
 
-Каждые *2 часа* я задаю 2 вопроса:
+Каждые *2 часа* я задаю 2 вопроса по очереди:
 1. Ты сейчас сознателен?
 2. Сколько времени уделил цели?
 
@@ -184,11 +184,11 @@ def send_welcome_message(chat_id, user_name):
     except:
         return False
 
-def send_question(chat_id, question_data, user_name=""):
+def send_question(chat_id, question_data, user_name="", question_num=1):
     if question_data.get("input_required"):
         message = f"""🦐 *Mindfulness Криветка*
 
-*Вопрос 2:*
+*Вопрос {question_num}:*
 
 {question_data['text']}"""
         
@@ -202,7 +202,7 @@ def send_question(chat_id, question_data, user_name=""):
         try:
             response = requests.post(url, json=payload, timeout=10)
             if user_name:
-                print(f"⏱️ Вопрос о времени {user_name}")
+                print(f"⏱️ Вопрос {question_num} {user_name}")
             return True
         except:
             return False
@@ -216,7 +216,7 @@ def send_question(chat_id, question_data, user_name=""):
         
         message = f"""🦐 *Mindfulness Криветка*
 
-*Вопрос 1:*
+*Вопрос {question_num}:*
 
 {question_data['text']}
 
@@ -233,7 +233,7 @@ def send_question(chat_id, question_data, user_name=""):
         try:
             response = requests.post(url, json=payload, timeout=10)
             if user_name:
-                print(f"🦐 Вопрос {user_name}: {question_data['text'][:30]}...")
+                print(f"🦐 Вопрос {question_num} {user_name}")
             return response.status_code == 200
         except:
             return False
@@ -287,16 +287,17 @@ def webhook():
             
             print(f"📩 {user_name}: {text}")
             
+            # Проверяем, не ждёт ли пользователь ответ на вопрос о времени
             if user_id in awaiting_time_response and awaiting_time_response[user_id]:
                 handle_time_input(chat_id, user_id, user_name, text)
                 return jsonify({"status": "ok"}), 200
             
+            # Обработка команд
             if text == '/start':
                 send_welcome_message(chat_id, user_name)
                 user_sessions[chat_id] = {
                     "user_id": user_id,
                     "user_name": user_name,
-                    "question_index": 0,
                     "waiting_for_start": True
                 }
                 print(f"🦐 Новый {user_name}")
@@ -348,38 +349,16 @@ def webhook():
             print(f"🖱️ {user_name}: {callback_data}")
             
             if callback_data == "start_practice":
-                send_two_questions(chat_id, user_id, user_name)
+                # Начинаем с первого вопроса
+                send_first_question(chat_id, user_id, user_name)
                 requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
                     "callback_query_id": callback['id'],
                     "text": "Начинаем!",
                     "show_alert": False
                 })
             else:
-                for question in MINDFULNESS_QUESTIONS:
-                    if "options" in question:
-                        for option in question["options"]:
-                            if option["callback"] == callback_data:
-                                save_response(
-                                    user_id,
-                                    user.get('username', user_name),
-                                    question["text"],
-                                    option["text"],
-                                    datetime.now().isoformat(),
-                                    "button"
-                                )
-                                break
-                
-                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
-                    "callback_query_id": callback['id'],
-                    "text": "✅ Записано",
-                    "show_alert": False
-                })
-                
-                requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
-                    "chat_id": chat_id,
-                    "text": "✅ Сохранено. Следующий вопрос через 2 часа.",
-                    "parse_mode": "Markdown"
-                })
+                # Ответ на первый вопрос (с кнопками)
+                handle_first_question_response(callback, chat_id, user_id, user_name)
         
         return jsonify({"status": "ok"}), 200
         
@@ -387,32 +366,63 @@ def webhook():
         print(f"❌ Ошибка: {e}")
         return jsonify({"status": "error"}), 500
 
-def send_two_questions(chat_id, user_id, user_name):
-    """Отправляет сразу 2 вопроса"""
+def send_first_question(chat_id, user_id, user_name):
+    """Отправляет первый вопрос (с кнопками)"""
     if chat_id not in user_sessions:
         user_sessions[chat_id] = {
             "user_id": user_id,
-            "user_name": user_name,
-            "question_index": 0
+            "user_name": user_name
         }
     
-    # Отправляем первый вопрос (с кнопками)
-    time.sleep(1)  # Пауза между сообщениями
-    send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name)
+    # Отправляем первый вопрос
+    send_question(chat_id, MINDFULNESS_QUESTIONS[0], user_name, 1)
     
-    # Отправляем второй вопрос (о времени)
-    time.sleep(1)  # Пауза между сообщениями
-    send_question(chat_id, MINDFULNESS_QUESTIONS[1], user_name)
+    # Отмечаем, что ждём ответ на первый вопрос
+    current_question_index[user_id] = 0
     
-    # Отмечаем, что ждём ответ на вопрос о времени
-    awaiting_time_response[user_id] = True
-    
-    # Планируем следующие 2 вопроса через 2 часа
+    # Планируем следующий цикл вопросов через 2 часа
     question_schedule[chat_id] = time.time() + 7200
     
-    print(f"🚀 2 вопроса отправлены {user_name}")
+    print(f"🚀 Первый вопрос отправлен {user_name}")
+
+def handle_first_question_response(callback, chat_id, user_id, user_name):
+    """Обрабатывает ответ на первый вопрос и отправляет второй"""
+    callback_data = callback['data']
+    
+    # Сохраняем ответ на первый вопрос
+    for question in MINDFULNESS_QUESTIONS:
+        if "options" in question:
+            for option in question["options"]:
+                if option["callback"] == callback_data:
+                    save_response(
+                        user_id,
+                        callback['from'].get('username', user_name),
+                        question["text"],
+                        option["text"],
+                        datetime.now().isoformat(),
+                        "button"
+                    )
+                    break
+    
+    # Подтверждаем получение ответа
+    requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/answerCallbackQuery", json={
+        "callback_query_id": callback['id'],
+        "text": "✅ Записано",
+        "show_alert": False
+    })
+    
+    # Отправляем второй вопрос (о времени)
+    time.sleep(1)  # Небольшая пауза
+    send_question(chat_id, MINDFULNESS_QUESTIONS[1], user_name, 2)
+    
+    # Отмечаем, что теперь ждём ответ на второй вопрос
+    awaiting_time_response[user_id] = True
+    current_question_index[user_id] = 1
+    
+    print(f"🦐 Второй вопрос отправлен {user_name}")
 
 def handle_time_input(chat_id, user_id, user_name, text):
+    """Обрабатывает ответ на второй вопрос (о времени)"""
     text = text.strip()
     
     if text.isdigit():
@@ -428,11 +438,14 @@ def handle_time_input(chat_id, user_id, user_name, text):
                 "text"
             )
             
+            # Сбрасываем флаги ожидания
             awaiting_time_response[user_id] = False
+            if user_id in current_question_index:
+                del current_question_index[user_id]
             
             requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={
                 "chat_id": chat_id,
-                "text": f"✅ {minutes} минут записано. Следующие 2 вопроса через 2 часа.",
+                "text": f"✅ {minutes} минут записано. Следующие вопросы через 2 часа.",
                 "parse_mode": "Markdown"
             })
         else:
@@ -449,7 +462,7 @@ def handle_time_input(chat_id, user_id, user_name, text):
         })
 
 def send_scheduled_questions():
-    """Отправляет 2 вопроса каждые 2 часа"""
+    """Отправляет вопросы по расписанию (каждые 2 часа)"""
     while True:
         try:
             current_time = time.time()
@@ -457,22 +470,22 @@ def send_scheduled_questions():
             for chat_id, next_time in list(question_schedule.items()):
                 if current_time >= next_time and chat_id in user_sessions:
                     session = user_sessions[chat_id]
+                    user_id = session["user_id"]
+                    
+                    # Проверяем, не отвечает ли пользователь сейчас
+                    if user_id in awaiting_time_response and awaiting_time_response[user_id]:
+                        continue
                     
                     # Отправляем первый вопрос
-                    time.sleep(1)
-                    send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"])
+                    send_question(chat_id, MINDFULNESS_QUESTIONS[0], session["user_name"], 1)
                     
-                    # Отправляем второй вопрос
-                    time.sleep(1)
-                    send_question(chat_id, MINDFULNESS_QUESTIONS[1], session["user_name"])
+                    # Отмечаем, что ждём ответ на первый вопрос
+                    current_question_index[user_id] = 0
                     
-                    # Отмечаем, что ждём ответ на вопрос о времени
-                    awaiting_time_response[session["user_id"]] = True
-                    
-                    # Планируем следующие 2 вопроса через 2 часа
+                    # Планируем следующий цикл через 2 часа
                     question_schedule[chat_id] = current_time + 7200
                     
-                    print(f"🦐 2 вопроса по расписанию {session['user_name']}")
+                    print(f"🕐 Вопросы по расписанию {session['user_name']}")
             
             time.sleep(10)
             
@@ -504,6 +517,6 @@ if __name__ == "__main__":
     print("🚀 Запуск...")
     print(f"🔗 https://mindfulness-bot-1.onrender.com")
     print("🤖 Напиши /start в Telegram")
-    print("🕐 Режим: 2 вопроса сразу, повтор через 2 часа")
+    print("🔄 Режим: вопросы по очереди, цикл каждые 2 часа")
     
     app.run(host='0.0.0.0', port=10000, debug=False, use_reloader=False)
